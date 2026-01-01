@@ -1,0 +1,9 @@
+{
+  "name": "rover-demo",
+  "main": "index.html",
+  "window": {
+    "title": "Rover Demo",
+    "width": 960,
+    "height": 720
+  }
+}

@@ -1,0 +1,17 @@
+﻿nim : Hint: used config file 'C:\Program 
+Files\nim\config\nim.cfg' [Conf]
+At line:1 char:1
++ nim c -d:release --opt:size rover.nim 2>&1 | Out-File 
+-FilePath build ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Hint: used 
+    conf...nim.cfg' [Conf]:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Hint: used config file 'C:\Program 
+Files\nim\config\config.nims' [Conf]
+........................................................
+........................................................
+...................
+C:\lab\Rover\rover.nim(65, 38) Error: attempting to 
+call undeclared routine: 'replace'

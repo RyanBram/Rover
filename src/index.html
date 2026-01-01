@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rover Demo</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(
+          135deg,
+          #1a1a2e 0%,
+          #16213e 50%,
+          #0f3460 100%
+        );
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #e4e4e7;
+      }
+
+      .container {
+        text-align: center;
+        padding: 3rem;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 24px;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        max-width: 600px;
+      }
+
+      .logo {
+        font-size: 5rem;
+        margin-bottom: 1rem;
+        animation: float 3s ease-in-out infinite;
+      }
+
+      @keyframes float {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-10px);
+        }
+      }
+
+      h1 {
+        font-size: 3rem;
+        font-weight: 700;
+        background: linear-gradient(120deg, #e94560, #ff6b6b, #feca57);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 0.5rem;
+      }
+
+      .subtitle {
+        font-size: 1.25rem;
+        color: #a1a1aa;
+        margin-bottom: 2rem;
+      }
+
+      .features {
+        display: grid;
+        gap: 1rem;
+        margin-top: 2rem;
+      }
+
+      .feature {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1rem 1.5rem;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        transition: all 0.3s ease;
+      }
+
+      .feature:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateX(5px);
+      }
+
+      .feature-icon {
+        font-size: 1.5rem;
+      }
+
+      .feature-text {
+        text-align: left;
+      }
+
+      .feature-title {
+        font-weight: 600;
+        color: #fafafa;
+      }
+
+      .feature-desc {
+        font-size: 0.875rem;
+        color: #71717a;
+      }
+
+      .footer {
+        margin-top: 2rem;
+        font-size: 0.875rem;
+        color: #52525b;
+      }
+
+      .footer a {
+        color: #e94560;
+        text-decoration: none;
+      }
+
+      .footer a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="logo">🚀</div>
+      <h1>Rover</h1>
+      <p class="subtitle">WebView2-based HTML Launcher for Windows</p>
+
+      <div class="features">
+        <div class="feature">
+          <span class="feature-icon">⚡</span>
+          <div class="feature-text">
+            <div class="feature-title">No Server Required</div>
+            <div class="feature-desc">
+              Direct HTML loading without HTTP server overhead
+            </div>
+          </div>
+        </div>
+
+        <div class="feature">
+          <span class="feature-icon">🎯</span>
+          <div class="feature-text">
+            <div class="feature-title">WebView2 Powered</div>
+            <div class="feature-desc">
+              Uses modern Edge/Chromium engine built into Windows
+            </div>
+          </div>
+        </div>
+
+        <div class="feature">
+          <span class="feature-icon">📦</span>
+          <div class="feature-text">
+            <div class="feature-title">NW.js Compatible</div>
+            <div class="feature-desc">Reads package.json for configuration</div>
+          </div>
+        </div>
+
+        <div class="feature">
+          <span class="feature-icon">💨</span>
+          <div class="feature-text">
+            <div class="feature-title">Lightweight</div>
+            <div class="feature-desc">
+              Single executable, minimal dependencies
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        Built with <a href="https://nim-lang.org">Nim</a> &amp;
+        <a href="https://github.com/neroist/webview">webview</a>
+      </div>
+    </div>
+  </body>
+</html>
