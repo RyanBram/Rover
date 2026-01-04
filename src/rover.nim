@@ -68,14 +68,27 @@ proc loadConfig(filename: string): Config =
     result.windowWidth = 960
     result.windowHeight = 720
 
+proc createDefaultPackageJson(filename: string) =
+  ## Create a default package.json file with standard fields
+  let defaultConfig = %*{
+    "name": "rover-app",
+    "main": "index.html",
+    "window": {
+      "title": "Rover App",
+      "width": 960,
+      "height": 720
+    }
+  }
+  writeFile(filename, defaultConfig.pretty())
+
 proc main() =
   # Find package.json in current directory
   let configFile = getCurrentDir() / "package.json"
 
   if not fileExists(configFile):
-    echo "[ERROR] package.json not found!"
-    echo "[ERROR] Please create package.json in the same directory"
-    quit(1)
+    echo "[CONFIG] package.json not found, creating default..."
+    createDefaultPackageJson(configFile)
+    echo "[CONFIG] Created package.json with default settings"
 
   # Load configuration
   echo "[CONFIG] Loading configuration from package.json..."
