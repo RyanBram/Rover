@@ -1,8 +1,9 @@
 {
-  "name": "rover-demo",
+  "name": "rover-app",
   "main": "index.html",
   "window": {
-    "title": "Rover Demo",
+    "title": "Rover App",
+    "icon": "icon/icon.png",
     "width": 960,
     "height": 720
   }

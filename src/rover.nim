@@ -1,6 +1,7 @@
-import std/[json, os, strformat, strutils]
+import std/[json, os, strformat, strutils, osproc]
 import ./webview
 import winim/lean
+import winim/inc/shellapi  # For ExtractIcon
 
 const polyfill = staticRead("polyfill.js")
 
@@ -48,6 +49,7 @@ type
     windowTitle: string
     windowWidth: int
     windowHeight: int
+    windowIcon: string  # Path to window icon (PNG, ICO)
 
 proc loadConfig(filename: string): Config =
   ## Load configuration from package.json (NW.js compatible)
@@ -67,6 +69,12 @@ proc loadConfig(filename: string): Config =
     result.windowTitle = "Rover App"
     result.windowWidth = 960
     result.windowHeight = 720
+  
+  # Window icon (NW.js format: window.icon)
+  if jsonData.hasKey("window") and jsonData["window"].hasKey("icon"):
+    result.windowIcon = jsonData["window"]["icon"].getStr("")
+  else:
+    result.windowIcon = "icon/icon.png"  # Default icon path
 
 proc createDefaultPackageJson(filename: string) =
   ## Create a default package.json file with standard fields
@@ -75,11 +83,78 @@ proc createDefaultPackageJson(filename: string) =
     "main": "index.html",
     "window": {
       "title": "Rover App",
+      "icon": "icon/icon.png",
       "width": 960,
       "height": 720
     }
   }
   writeFile(filename, defaultConfig.pretty())
+
+proc setWindowIconFromExe(hwnd: HWND) =
+  ## Extract and set icon from executable's RC resources
+  let hInstance = GetModuleHandle(nil)
+  
+  # Try to load icon from executable resources (index 0 = first icon)
+  let hIcon = ExtractIcon(hInstance, getAppFilename(), 0)
+  
+  if hIcon != 0 and hIcon != cast[HICON](1):
+    SendMessage(hwnd, WM_SETICON, ICON_BIG, cast[LPARAM](hIcon))
+    SendMessage(hwnd, WM_SETICON, ICON_SMALL, cast[LPARAM](hIcon))
+    echo "[ICON] Using icon from executable resources"
+  else:
+    echo "[ICON] No icon in executable resources"
+
+proc setWindowIcon(hwnd: HWND, iconPath: string) =
+  ## Set window icon from file (ICO), fallback to executable's RC icon
+  
+  # If iconPath is empty, use executable icon
+  if iconPath.len == 0:
+    echo "[ICON] No icon path specified, using executable icon"
+    setWindowIconFromExe(hwnd)
+    return
+  
+  # Try to load from file
+  if not fileExists(iconPath):
+    echo &"[ICON] Icon file not found: {iconPath}, using executable icon"
+    setWindowIconFromExe(hwnd)
+    return
+  
+  let absPath = absolutePath(iconPath)
+  echo &"[ICON] Loading icon from: {absPath}"
+  
+  # Determine icon type based on extension
+  let ext = splitFile(iconPath).ext.toLowerAscii()
+  
+  var iconLoaded = false
+  
+  if ext == ".ico":
+    # Load ICO file directly using LoadImage
+    let hIconBig = LoadImage(0, absPath, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+    let hIconSmall = LoadImage(0, absPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+    
+    if hIconBig != 0:
+      SendMessage(hwnd, WM_SETICON, ICON_BIG, hIconBig)
+      echo "[ICON] Set big icon (32x32)"
+      iconLoaded = true
+    
+    if hIconSmall != 0:
+      SendMessage(hwnd, WM_SETICON, ICON_SMALL, hIconSmall)
+      echo "[ICON] Set small icon (16x16)"
+      iconLoaded = true
+  else:
+    # For PNG and other formats, try to load as icon
+    echo &"[ICON] Warning: {ext} format may not be supported. Consider using .ico format."
+    let hIcon = LoadImage(0, absPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE or LR_DEFAULTSIZE)
+    if hIcon != 0:
+      SendMessage(hwnd, WM_SETICON, ICON_BIG, hIcon)
+      SendMessage(hwnd, WM_SETICON, ICON_SMALL, hIcon)
+      echo "[ICON] Icon loaded successfully"
+      iconLoaded = true
+  
+  # Fallback to executable icon if loading failed
+  if not iconLoaded:
+    echo "[ICON] Failed to load icon file, using executable icon"
+    setWindowIconFromExe(hwnd)
 
 proc main() =
   # Find package.json in current directory
@@ -97,6 +172,7 @@ proc main() =
   echo &"[CONFIG] App: {config.name}"
   echo &"[CONFIG] Main: {config.main}"
   echo &"[CONFIG] Title: {config.windowTitle}"
+  echo &"[CONFIG] Icon: {config.windowIcon}"
   echo &"[CONFIG] Window Size: {config.windowWidth}x{config.windowHeight}"
   echo ""
 
@@ -110,8 +186,20 @@ proc main() =
   # Create WebView window
   # Pass config size to ensure it opens at correct size and centered immediately
   let w = newWebview(width = config.windowWidth, height = config.windowHeight)
+  
+  # Get HWND and set icon IMMEDIATELY after window creation
+  # This minimizes the visible delay where window has no/default icon
+  let hwnd = cast[HWND](w.getWindow())
+  
+  # Set icon first (priority: package.json > exe fallback)
+  # HTML/JS can override this after page loads via auto-sync
+  if config.windowIcon.len > 0:
+    setWindowIcon(hwnd, config.windowIcon)
+  else:
+    setWindowIconFromExe(hwnd)
+  
+  # Now set title and initialize polyfill
   w.title = config.windowTitle
-  # Size is already set correctly in newWebview, no need to call w.size again
   w.init(polyfill)
 
   # Configure Virtual Host Mapping to bypass CORS
@@ -261,6 +349,221 @@ proc main() =
       w.webviewReturn(id, 0, "[]")
   , wPtr)
 
+  # Add set_title binding for programmatic title changes from JS
+  w.webviewBind("set_title", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let newTitle = args[0].getStr()
+      w.setTitle(cstring(newTitle))
+      w.webviewReturn(id, 0, "true")
+    except:
+      w.webviewReturn(id, 1, "\"Failed to set title\"")
+  , wPtr)
+
+  # Add set_icon binding for programmatic icon changes from JS
+  w.webviewBind("set_icon", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let iconPath = args[0].getStr()
+      let hwnd = cast[HWND](w.getWindow())
+      setWindowIcon(hwnd, iconPath)
+      w.webviewReturn(id, 0, "true")
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  # =========================================================================
+  # ADDITIONAL FILE SYSTEM BINDINGS (for full NW.js compatibility)
+  # =========================================================================
+
+  w.webviewBind("fs_rename", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let oldPath = args[0].getStr()
+      let newPath = args[1].getStr()
+      moveFile(oldPath, newPath)
+      w.webviewReturn(id, 0, "true")
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  w.webviewBind("fs_append_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let filePath = args[0].getStr()
+      let content = args[1].getStr()
+      let f = open(filePath, fmAppend)
+      f.write(content)
+      f.close()
+      w.webviewReturn(id, 0, "true")
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  w.webviewBind("fs_copy_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let srcPath = args[0].getStr()
+      let destPath = args[1].getStr()
+      copyFile(srcPath, destPath)
+      w.webviewReturn(id, 0, "true")
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  w.webviewBind("fs_stat", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let filePath = args[0].getStr()
+      let info = getFileInfo(filePath)
+      let jsonResult = %*{
+        "size": info.size,
+        "isFile": info.kind == pcFile,
+        "isDirectory": info.kind == pcDir
+      }
+      w.webviewReturn(id, 0, cstring($jsonResult))
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  # =========================================================================
+  # SHELL AND PROCESS BINDINGS
+  # =========================================================================
+
+  w.webviewBind("shell_open_item", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let filePath = args[0].getStr()
+      # Use ShellExecute to open with default application
+      discard ShellExecute(0, "open", filePath, nil, nil, SW_SHOWNORMAL)
+      w.webviewReturn(id, 0, "true")
+    except:
+      w.webviewReturn(id, 1, "\"Failed to open item\"")
+  , wPtr)
+
+  w.webviewBind("exec_command", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let command = args[0].getStr()
+      # Execute command using osproc.execCmd
+      let exitCode = osproc.execCmd(command)
+      let jsonResult = %*{"exitCode": exitCode, "stdout": "", "stderr": ""}
+      w.webviewReturn(id, 0, cstring($jsonResult))
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  w.webviewBind("get_user_home", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let homeDir = getHomeDir().replace("\\", "\\\\")
+      w.webviewReturn(id, 0, cstring(&"\"{homeDir}\""))
+    except:
+      w.webviewReturn(id, 1, "\"Failed to get home directory\"")
+  , wPtr)
+
+  # =========================================================================
+  # WINDOW MANAGEMENT BINDINGS
+  # =========================================================================
+
+  w.webviewBind("window_minimize", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    let hwnd = cast[HWND](w.getWindow())
+    ShowWindow(hwnd, SW_MINIMIZE)
+    w.webviewReturn(id, 0, "true")
+  , wPtr)
+
+  w.webviewBind("window_maximize", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    let hwnd = cast[HWND](w.getWindow())
+    ShowWindow(hwnd, SW_MAXIMIZE)
+    w.webviewReturn(id, 0, "true")
+  , wPtr)
+
+  w.webviewBind("window_restore", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    let hwnd = cast[HWND](w.getWindow())
+    ShowWindow(hwnd, SW_RESTORE)
+    w.webviewReturn(id, 0, "true")
+  , wPtr)
+
+  w.webviewBind("window_focus", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    let hwnd = cast[HWND](w.getWindow())
+    SetForegroundWindow(hwnd)
+    w.webviewReturn(id, 0, "true")
+  , wPtr)
+
+  w.webviewBind("window_flash", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let attention = args[0].getInt()
+      let hwnd = cast[HWND](w.getWindow())
+      if attention > 0:
+        FlashWindow(hwnd, TRUE)
+      else:
+        FlashWindow(hwnd, FALSE)
+      w.webviewReturn(id, 0, "true")
+    except:
+      w.webviewReturn(id, 0, "true")
+  , wPtr)
+
+  w.webviewBind("set_window_position", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let x = args[0].getInt()
+      let y = args[1].getInt()
+      let hwnd = cast[HWND](w.getWindow())
+      SetWindowPos(hwnd, 0, x.cint, y.cint, 0, 0, SWP_NOSIZE or SWP_NOZORDER)
+      w.webviewReturn(id, 0, "true")
+    except:
+      w.webviewReturn(id, 1, "\"Failed to set position\"")
+  , wPtr)
+
+  w.webviewBind("set_window_size", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let width = args[0].getInt()
+      let height = args[1].getInt()
+      let hwnd = cast[HWND](w.getWindow())
+      SetWindowPos(hwnd, 0, 0, 0, width.cint, height.cint, SWP_NOMOVE or SWP_NOZORDER)
+      w.webviewReturn(id, 0, "true")
+    except:
+      w.webviewReturn(id, 1, "\"Failed to set size\"")
+  , wPtr)
+
+  w.webviewBind("set_always_on_top", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let onTop = args[0].getBool()
+      let hwnd = cast[HWND](w.getWindow())
+      if onTop:
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE)
+      else:
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE)
+      w.webviewReturn(id, 0, "true")
+    except:
+      w.webviewReturn(id, 1, "\"Failed to set always on top\"")
+  , wPtr)
+
   echo ""
   echo "================================================"
   echo "  Rover - WebView2 Application Running"
@@ -269,8 +572,7 @@ proc main() =
   echo ""
 
   # Centering is already handled in webview.h constructor
-  # No need to call centerWindow here
-  let hwnd = cast[HWND](w.getWindow())
+  # hwnd already obtained above for icon setting
   
   # Register Hotkeys
   RegisterHotKey(hwnd, 1, MOD_NOREPEAT, VK_F4)

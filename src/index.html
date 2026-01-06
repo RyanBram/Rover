@@ -9,6 +9,10 @@
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-user-drag: none;
+            cursor: default;
         }
         
         body {
@@ -20,6 +24,19 @@
             align-items: center;
             height: 100vh;
             overflow: hidden;
+        }
+        
+        img {
+            pointer-events: none;
+        }
+
+        a {
+            cursor: pointer;
+            pointer-events: auto;
+        }
+
+        a img {
+            pointer-events: auto; /* Allow clicking on linked images */
         }
         
         .container {
@@ -66,13 +83,67 @@
             color: #FFC131;
         }
         
+        .footer-left {
+            position: fixed;
+            bottom: 20px;
+            left: 30px;
+            font-size: 13px;
+            color: #666666;
+            opacity: 0.8;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .footer-left a {
+            color: #666666;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: opacity 0.2s;
+        }
+
+        .footer-left a:hover {
+            opacity: 1;
+            color: #aaaaaa;
+        }
+
+        .footer-center {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 13px;
+            opacity: 0.8;
+        }
+
+        .footer-center a {
+            color: #666666;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .footer-center a:hover {
+            color: #aaaaaa;
+        }
+
         .version {
             position: fixed;
             bottom: 20px;
             right: 30px;
             font-size: 13px;
-            color: #666666;
             opacity: 0.8;
+        }
+
+        .version a {
+            color: #666666;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .version a:hover {
+            color: #aaaaaa;
         }
         
         @keyframes fadeIn {
@@ -94,12 +165,22 @@
         <p class="subtitle">Universal HTML5 App Launcher</p>
         
         <div class="info">
-            <p>Place this executable in a game directory containing <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;">index.html</code></p>
+            <p>Place this executable in an app directory containing <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 3px;">index.html</code></p>
         </div>
     </div>
     
+    <div class="footer-left">
+        <a href="https://nim-lang.org/" target="_blank">
+            Written with <img src="assets/nim-lang.svg" alt="Nim" style="height: 14px; opacity: 0.9;">
+        </a>
+    </div>
+
+    <div class="footer-center">
+        <a href="https://github.com/RyanBram/Rover" target="_blank">https://github.com/RyanBram/Rover</a>
+    </div>
+
     <div class="version">
-        Rover v1.0.0
+        <a href="https://ryanbram.itch.io/rover-universal-html5-app-launcher" target="_blank">Rover v1.0.0</a>
     </div>
 </body>
 </html>

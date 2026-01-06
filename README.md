@@ -87,17 +87,7 @@ nim --version
 
 ### Compilation
 
-**Using Nimble (recommended):**
-
-```powershell
-nimble build
-```
-
-**Manual compilation:**
-
-```powershell
-nim c -d:release --opt:size -o:rover.exe src/rover.nim
-```
+Click build.bat on Windows
 
 **Output:** `rover.exe` (~200 KB)
 
