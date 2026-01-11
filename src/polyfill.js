@@ -145,38 +145,26 @@
           window.__roverBaseDir = dir;
           window.process.mainModule.filename = dir + "\\index.html";
 
-          // Pre-populate file cache by listing common game directories
-          // This improves existsSync accuracy for typical game structures
+          // Pre-populate file cache by listing save directory
+          // This is critical for RPG Maker save file detection
           if (typeof window.fs_list_dir === "function") {
-            var dirsToCache = [
-              "save",
-              "data",
-              "audio",
-              "img",
-              "movies",
-              "fonts",
-              "icon",
-            ];
-
-            dirsToCache.forEach(function (subDir) {
-              var fullDir = dir + "\\" + subDir;
-              window
-                .fs_list_dir(fullDir)
-                .then(function (files) {
-                  // Mark directory as existing
-                  window._roverCreatedDirs[fullDir] = true;
-                  window._roverCreatedDirs[fullDir + "\\"] = true;
-
-                  // Cache all files in this directory
-                  for (var i = 0; i < files.length; i++) {
-                    var fullPath = fullDir + "\\" + files[i];
-                    window._roverWrittenFiles[fullPath] = true;
-                  }
-                })
-                .catch(function () {
-                  // Directory might not exist - that's fine
-                });
-            });
+            var saveDir = dir + "\\save";
+            window
+              .fs_list_dir(saveDir)
+              .then(function (files) {
+                // Cache all save files
+                for (var i = 0; i < files.length; i++) {
+                  var fullPath = saveDir + "\\" + files[i];
+                  window._roverWrittenFiles[fullPath] = true;
+                }
+                // Mark save dir as existing if it has files
+                if (files.length > 0) {
+                  window._roverCreatedDirs[saveDir + "\\"] = true;
+                }
+              })
+              .catch(function () {
+                // Save directory might not exist yet - that's fine
+              });
           }
         })
         .catch(function (err) {
