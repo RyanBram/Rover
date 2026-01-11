@@ -28,52 +28,6 @@
     }
   } catch (e) {}
 
-  // =========================================================================
-  // NODE.JS GLOBAL POLYFILLS FOR UNITY WEBGL
-  // Unity WebGL builds may reference __dirname and __filename
-  // =========================================================================
-
-  if (typeof window.__dirname === "undefined") {
-    // __dirname represents the directory of the current script
-    // For web context, use empty string or current location
-    window.__dirname = "";
-
-    // Try to derive from location
-    try {
-      var pathParts = window.location.pathname.split("/");
-      pathParts.pop(); // Remove filename
-      window.__dirname = pathParts.join("/") || "/";
-    } catch (e) {
-      window.__dirname = "/";
-    }
-  }
-
-  if (typeof window.__filename === "undefined") {
-    // __filename represents the filename of the current script
-    window.__filename = window.location.pathname || "/index.html";
-  }
-
-  // Also define as global (non-window) for strict mode scripts
-  if (typeof __dirname === "undefined") {
-    try {
-      Object.defineProperty(window, "__dirname", {
-        value: window.__dirname,
-        writable: true,
-        configurable: true,
-      });
-    } catch (e) {}
-  }
-
-  if (typeof __filename === "undefined") {
-    try {
-      Object.defineProperty(window, "__filename", {
-        value: window.__filename,
-        writable: true,
-        configurable: true,
-      });
-    } catch (e) {}
-  }
-
   // Emulate process object for NW.js compatibility
   if (typeof window.process === "undefined") {
     // Store start time for hrtime calculations
