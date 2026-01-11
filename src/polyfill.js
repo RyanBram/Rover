@@ -3,10 +3,10 @@
   // NW.js COMPATIBILITY FLAGS
   // These flags enable detection by NW.js applications
   // =========================================================================
-  
+
   // Universal NW.js detection - most apps check: typeof nw !== 'undefined'
   // The nw object itself is defined below
-  
+
   // Helper to safety call native bindings
   function callNative(name, args) {
     if (typeof window[name] === "function") {
@@ -27,6 +27,52 @@
       basePath = ".";
     }
   } catch (e) {}
+
+  // =========================================================================
+  // NODE.JS GLOBAL POLYFILLS FOR UNITY WEBGL
+  // Unity WebGL builds may reference __dirname and __filename
+  // =========================================================================
+
+  if (typeof window.__dirname === "undefined") {
+    // __dirname represents the directory of the current script
+    // For web context, use empty string or current location
+    window.__dirname = "";
+
+    // Try to derive from location
+    try {
+      var pathParts = window.location.pathname.split("/");
+      pathParts.pop(); // Remove filename
+      window.__dirname = pathParts.join("/") || "/";
+    } catch (e) {
+      window.__dirname = "/";
+    }
+  }
+
+  if (typeof window.__filename === "undefined") {
+    // __filename represents the filename of the current script
+    window.__filename = window.location.pathname || "/index.html";
+  }
+
+  // Also define as global (non-window) for strict mode scripts
+  if (typeof __dirname === "undefined") {
+    try {
+      Object.defineProperty(window, "__dirname", {
+        value: window.__dirname,
+        writable: true,
+        configurable: true,
+      });
+    } catch (e) {}
+  }
+
+  if (typeof __filename === "undefined") {
+    try {
+      Object.defineProperty(window, "__filename", {
+        value: window.__filename,
+        writable: true,
+        configurable: true,
+      });
+    } catch (e) {}
+  }
 
   // Emulate process object for NW.js compatibility
   if (typeof window.process === "undefined") {
@@ -179,7 +225,7 @@
         get: function () {
           return {
             focus: function () {
-              if (typeof window.window_focus === 'function') {
+              if (typeof window.window_focus === "function") {
                 window.window_focus();
               }
             },
@@ -211,34 +257,44 @@
             isFullscreen: window._roverIsFullScreen,
             on: function () {},
             // Window position/size - getters return actual values, setters call native
-            get x() { return window.screenX || 0; },
-            set x(val) { 
-              if (typeof window.set_window_position === 'function') {
+            get x() {
+              return window.screenX || 0;
+            },
+            set x(val) {
+              if (typeof window.set_window_position === "function") {
                 window.set_window_position(val, window.screenY || 0);
               }
             },
-            get y() { return window.screenY || 0; },
+            get y() {
+              return window.screenY || 0;
+            },
             set y(val) {
-              if (typeof window.set_window_position === 'function') {
+              if (typeof window.set_window_position === "function") {
                 window.set_window_position(window.screenX || 0, val);
               }
             },
-            get width() { return window.outerWidth || 800; },
+            get width() {
+              return window.outerWidth || 800;
+            },
             set width(val) {
-              if (typeof window.set_window_size === 'function') {
+              if (typeof window.set_window_size === "function") {
                 window.set_window_size(val, window.outerHeight || 600);
               }
             },
-            get height() { return window.outerHeight || 600; },
+            get height() {
+              return window.outerHeight || 600;
+            },
             set height(val) {
-              if (typeof window.set_window_size === 'function') {
+              if (typeof window.set_window_size === "function") {
                 window.set_window_size(window.outerWidth || 800, val);
               }
             },
-            get title() { return document.title || ''; },
+            get title() {
+              return document.title || "";
+            },
             set title(val) {
               document.title = val;
-              if (typeof window.set_title === 'function') {
+              if (typeof window.set_title === "function") {
                 window.set_title(val);
               }
             },
@@ -246,50 +302,50 @@
               callNative("center_window");
             },
             minimize: function () {
-              if (typeof window.window_minimize === 'function') {
+              if (typeof window.window_minimize === "function") {
                 window.window_minimize();
               }
             },
             maximize: function () {
-              if (typeof window.window_maximize === 'function') {
+              if (typeof window.window_maximize === "function") {
                 window.window_maximize();
               }
             },
             unmaximize: function () {
-              if (typeof window.window_restore === 'function') {
+              if (typeof window.window_restore === "function") {
                 window.window_restore();
               }
             },
             restore: function () {
-              if (typeof window.window_restore === 'function') {
+              if (typeof window.window_restore === "function") {
                 window.window_restore();
               }
             },
             requestAttention: function (attention) {
-              if (typeof window.window_flash === 'function') {
+              if (typeof window.window_flash === "function") {
                 window.window_flash(attention);
               }
             },
             setMaximumSize: function (w, h) {
-              if (typeof window.set_window_max_size === 'function') {
+              if (typeof window.set_window_max_size === "function") {
                 window.set_window_max_size(w, h);
               }
             },
             setMinimumSize: function (w, h) {
-              if (typeof window.set_window_min_size === 'function') {
+              if (typeof window.set_window_min_size === "function") {
                 window.set_window_min_size(w, h);
               }
             },
             setResizable: function (resizable) {
-              if (typeof window.set_window_resizable === 'function') {
+              if (typeof window.set_window_resizable === "function") {
                 window.set_window_resizable(resizable);
               }
             },
             setAlwaysOnTop: function (onTop) {
-              if (typeof window.set_always_on_top === 'function') {
+              if (typeof window.set_always_on_top === "function") {
                 window.set_always_on_top(onTop);
               }
-            }
+            },
           };
         },
       },
@@ -302,19 +358,19 @@
         filteredArgv: [],
         clearCache: function () {
           // Cache clearing - no-op for WebView2
-        }
+        },
       },
       Shell: {
         openExternal: function (url) {
           window.open(url);
         },
         openItem: function (path) {
-          if (typeof window.shell_open_item === 'function') {
+          if (typeof window.shell_open_item === "function") {
             window.shell_open_item(path);
           } else {
-            console.log('[Rover] shell_open_item not available for:', path);
+            console.log("[Rover] shell_open_item not available for:", path);
           }
-        }
+        },
       },
       Clipboard: {
         get: function () {
@@ -327,37 +383,40 @@
               }
               // Try to read async and cache for next call
               if (navigator.clipboard && navigator.clipboard.readText) {
-                navigator.clipboard.readText().then(function(text) {
-                  window._roverClipboardText = text;
-                }).catch(function() {});
+                navigator.clipboard
+                  .readText()
+                  .then(function (text) {
+                    window._roverClipboardText = text;
+                  })
+                  .catch(function () {});
               }
-              return '';
+              return "";
             },
             set: function (data, type) {
               window._roverClipboardText = data;
               // Write to system clipboard
               if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(data).catch(function(err) {
-                  console.warn('[Rover] Clipboard write failed:', err);
+                navigator.clipboard.writeText(data).catch(function (err) {
+                  console.warn("[Rover] Clipboard write failed:", err);
                 });
-              } else if (typeof window.clipboard_write === 'function') {
+              } else if (typeof window.clipboard_write === "function") {
                 window.clipboard_write(data);
               }
             },
             clear: function () {
-              window._roverClipboardText = '';
+              window._roverClipboardText = "";
               if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText('').catch(function() {});
-              } else if (typeof window.clipboard_clear === 'function') {
+                navigator.clipboard.writeText("").catch(function () {});
+              } else if (typeof window.clipboard_clear === "function") {
                 window.clipboard_clear();
               }
-            }
+            },
           };
-        }
+        },
       },
-      process: window.process || { platform: 'win32' }
+      process: window.process || { platform: "win32" },
     };
-    
+
     // Also set as nwgui for backwards compatibility with older NW.js code
     // c2runtime.js accesses window["nwgui"] directly
     window.nwgui = window.nw;
@@ -748,172 +807,213 @@
             }
           },
           // statSync - returns file stats including size
-          statSync: function(path) {
+          statSync: function (path) {
             // For sync stats, we return cached info or placeholder
             // Real stats would need native sync binding
             var stats = {
               size: 0,
-              isFile: function() { return true; },
-              isDirectory: function() { return false; },
+              isFile: function () {
+                return true;
+              },
+              isDirectory: function () {
+                return false;
+              },
               mtime: new Date(),
               ctime: new Date(),
-              atime: new Date()
+              atime: new Date(),
             };
             // Check if it's a known directory
             if (window._roverCreatedDirs && window._roverCreatedDirs[path]) {
-              stats.isFile = function() { return false; };
-              stats.isDirectory = function() { return true; };
+              stats.isFile = function () {
+                return false;
+              };
+              stats.isDirectory = function () {
+                return true;
+              };
             }
             return stats;
           },
           // stat - async version
-          stat: function(path, callback) {
-            if (typeof window.fs_stat === 'function') {
-              window.fs_stat(path).then(function(stats) {
-                if (callback) callback(null, stats);
-              }).catch(function(err) {
-                if (callback) callback(err);
-              });
+          stat: function (path, callback) {
+            if (typeof window.fs_stat === "function") {
+              window
+                .fs_stat(path)
+                .then(function (stats) {
+                  if (callback) callback(null, stats);
+                })
+                .catch(function (err) {
+                  if (callback) callback(err);
+                });
             } else {
               // Fallback to sync version
               try {
                 var stats = this.statSync(path);
                 if (callback) callback(null, stats);
-              } catch(e) {
+              } catch (e) {
                 if (callback) callback(e);
               }
             }
           },
           // renameSync - rename/move file
-          renameSync: function(oldPath, newPath) {
+          renameSync: function (oldPath, newPath) {
             // Track new path and untrack old
             if (window._roverWrittenFiles[oldPath]) {
               window._roverWrittenFiles[newPath] = true;
               delete window._roverWrittenFiles[oldPath];
             }
-            if (typeof window.fs_rename === 'function') {
-              window.fs_rename(oldPath, newPath).catch(function(err) {
-                console.error('[Rover] renameSync failed:', err);
+            if (typeof window.fs_rename === "function") {
+              window.fs_rename(oldPath, newPath).catch(function (err) {
+                console.error("[Rover] renameSync failed:", err);
                 // Revert cache on failure
                 delete window._roverWrittenFiles[newPath];
                 window._roverWrittenFiles[oldPath] = true;
               });
             } else {
-              console.warn('[Rover] fs_rename not available');
+              console.warn("[Rover] fs_rename not available");
             }
           },
-          // rename - async version  
-          rename: function(oldPath, newPath, callback) {
-            if (typeof window.fs_rename === 'function') {
+          // rename - async version
+          rename: function (oldPath, newPath, callback) {
+            if (typeof window.fs_rename === "function") {
               window._roverWrittenFiles[newPath] = true;
               delete window._roverWrittenFiles[oldPath];
-              window.fs_rename(oldPath, newPath).then(function() {
-                if (callback) callback(null);
-              }).catch(function(err) {
-                // Revert cache on failure
-                delete window._roverWrittenFiles[newPath];
-                window._roverWrittenFiles[oldPath] = true;
-                if (callback) callback(err);
-              });
+              window
+                .fs_rename(oldPath, newPath)
+                .then(function () {
+                  if (callback) callback(null);
+                })
+                .catch(function (err) {
+                  // Revert cache on failure
+                  delete window._roverWrittenFiles[newPath];
+                  window._roverWrittenFiles[oldPath] = true;
+                  if (callback) callback(err);
+                });
             } else {
-              if (callback) callback(new Error('fs_rename not available'));
+              if (callback) callback(new Error("fs_rename not available"));
             }
           },
           // appendFileSync - append content to file
-          appendFileSync: function(path, data, options) {
+          appendFileSync: function (path, data, options) {
             window._roverWrittenFiles[path] = true;
-            if (typeof window.fs_append_file === 'function') {
-              window.fs_append_file(path, data).catch(function(err) {
-                console.error('[Rover] appendFileSync failed:', err);
+            if (typeof window.fs_append_file === "function") {
+              window.fs_append_file(path, data).catch(function (err) {
+                console.error("[Rover] appendFileSync failed:", err);
               });
             } else {
-              console.warn('[Rover] fs_append_file not available');
+              console.warn("[Rover] fs_append_file not available");
             }
           },
           // appendFile - async version
-          appendFile: function(path, data, options, callback) {
-            if (typeof callback === 'undefined' && typeof options === 'function') {
+          appendFile: function (path, data, options, callback) {
+            if (
+              typeof callback === "undefined" &&
+              typeof options === "function"
+            ) {
               callback = options;
               options = {};
             }
             window._roverWrittenFiles[path] = true;
-            if (typeof window.fs_append_file === 'function') {
-              window.fs_append_file(path, data).then(function() {
-                if (callback) callback(null);
-              }).catch(function(err) {
-                if (callback) callback(err);
-              });
+            if (typeof window.fs_append_file === "function") {
+              window
+                .fs_append_file(path, data)
+                .then(function () {
+                  if (callback) callback(null);
+                })
+                .catch(function (err) {
+                  if (callback) callback(err);
+                });
             } else {
-              if (callback) callback(new Error('fs_append_file not available'));
+              if (callback) callback(new Error("fs_append_file not available"));
             }
           },
           // copyFileSync - copy file (used by NodeWebkit CopyFile action)
-          copyFileSync: function(src, dest) {
+          copyFileSync: function (src, dest) {
             window._roverWrittenFiles[dest] = true;
-            if (typeof window.fs_copy_file === 'function') {
-              window.fs_copy_file(src, dest).catch(function(err) {
-                console.error('[Rover] copyFileSync failed:', err);
+            if (typeof window.fs_copy_file === "function") {
+              window.fs_copy_file(src, dest).catch(function (err) {
+                console.error("[Rover] copyFileSync failed:", err);
                 delete window._roverWrittenFiles[dest];
               });
             } else {
-              console.warn('[Rover] fs_copy_file not available');
+              console.warn("[Rover] fs_copy_file not available");
             }
           },
           // copyFile - async version
-          copyFile: function(src, dest, callback) {
+          copyFile: function (src, dest, callback) {
             window._roverWrittenFiles[dest] = true;
-            if (typeof window.fs_copy_file === 'function') {
-              window.fs_copy_file(src, dest).then(function() {
-                if (callback) callback(null);
-              }).catch(function(err) {
-                delete window._roverWrittenFiles[dest];
-                if (callback) callback(err);
-              });
+            if (typeof window.fs_copy_file === "function") {
+              window
+                .fs_copy_file(src, dest)
+                .then(function () {
+                  if (callback) callback(null);
+                })
+                .catch(function (err) {
+                  delete window._roverWrittenFiles[dest];
+                  if (callback) callback(err);
+                });
             } else {
-              if (callback) callback(new Error('fs_copy_file not available'));
+              if (callback) callback(new Error("fs_copy_file not available"));
             }
-          }
+          },
         };
       }
-      if (moduleName === 'child_process') {
+      if (moduleName === "child_process") {
         return {
-          exec: function(command, options, callback) {
-            if (typeof options === 'function') {
+          exec: function (command, options, callback) {
+            if (typeof options === "function") {
               callback = options;
               options = {};
             }
             // Execute command via native binding
-            if (typeof window.exec_command === 'function') {
-              window.exec_command(command).then(function(result) {
-                if (callback) callback(null, result.stdout || '', result.stderr || '');
-              }).catch(function(err) {
-                if (callback) callback(err, '', err.message || '');
-              });
+            if (typeof window.exec_command === "function") {
+              window
+                .exec_command(command)
+                .then(function (result) {
+                  if (callback)
+                    callback(null, result.stdout || "", result.stderr || "");
+                })
+                .catch(function (err) {
+                  if (callback) callback(err, "", err.message || "");
+                });
             } else {
-              console.warn('[Rover] exec_command not available for:', command);
-              if (callback) callback(new Error('exec_command not available'), '', '');
+              console.warn("[Rover] exec_command not available for:", command);
+              if (callback)
+                callback(new Error("exec_command not available"), "", "");
             }
           },
-          execSync: function(command, options) {
+          execSync: function (command, options) {
             // Sync exec - logs warning as we can't truly do sync
-            console.warn('[Rover] execSync called - async alternative used:', command);
-            if (typeof window.exec_command === 'function') {
-              window.exec_command(command).catch(function(err) {
-                console.error('[Rover] execSync failed:', err);
+            console.warn(
+              "[Rover] execSync called - async alternative used:",
+              command
+            );
+            if (typeof window.exec_command === "function") {
+              window.exec_command(command).catch(function (err) {
+                console.error("[Rover] execSync failed:", err);
               });
             }
-            return '';
+            return "";
           },
-          spawn: function(command, args, options) {
+          spawn: function (command, args, options) {
             // Spawn process - simplified implementation
-            console.warn('[Rover] spawn called:', command, args);
+            console.warn("[Rover] spawn called:", command, args);
             return {
-              on: function(event, cb) { return this; },
-              stdout: { on: function(event, cb) { return this; } },
-              stderr: { on: function(event, cb) { return this; } },
-              kill: function() {}
+              on: function (event, cb) {
+                return this;
+              },
+              stdout: {
+                on: function (event, cb) {
+                  return this;
+                },
+              },
+              stderr: {
+                on: function (event, cb) {
+                  return this;
+                },
+              },
+              kill: function () {},
             };
-          }
+          },
         };
       }
       return {};
