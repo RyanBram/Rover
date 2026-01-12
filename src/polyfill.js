@@ -86,10 +86,7 @@
 
   // Get actual exe directory from native binding and update process.mainModule.filename
   // This is critical for NW.js save path resolution
-  // Run immediately (no delay) to catch it before first save attempt
   window.__roverBaseDir = ""; // Will be set by native binding
-  window._roverWrittenFiles = {}; // Cache for known existing files
-  window._roverCreatedDirs = {}; // Cache for created directories
 
   (function initMainModuleFilename() {
     if (typeof window.get_exe_directory === "function") {
@@ -98,28 +95,6 @@
         .then(function (dir) {
           window.__roverBaseDir = dir;
           window.process.mainModule.filename = dir + "\\index.html";
-
-          // Pre-populate file cache by listing save directory
-          // This is critical for RPG Maker save file detection
-          if (typeof window.fs_list_dir === "function") {
-            var saveDir = dir + "\\save";
-            window
-              .fs_list_dir(saveDir)
-              .then(function (files) {
-                // Cache all save files
-                for (var i = 0; i < files.length; i++) {
-                  var fullPath = saveDir + "\\" + files[i];
-                  window._roverWrittenFiles[fullPath] = true;
-                }
-                // Mark save dir as existing if it has files
-                if (files.length > 0) {
-                  window._roverCreatedDirs[saveDir + "\\"] = true;
-                }
-              })
-              .catch(function () {
-                // Save directory might not exist yet - that's fine
-              });
-          }
         })
         .catch(function (err) {
           // Silent fail - path will use fallback
@@ -130,38 +105,73 @@
     }
   })();
 
+  // =========================================================================
+  // BROWSER FULLSCREEN API SHIM
+  // WebView2 doesn't support standard browser Fullscreen API like NW.js does
+  // This shim redirects fullscreen calls to native toggle_fullscreen binding
+  // Both NW.js and WebView2 use Chromium, so only standard API is needed
+  // =========================================================================
+
+  // Track fullscreen state internally
+  window._roverIsFullScreen = false;
+
+  // Helper to check fullscreen based on window size
+  function checkFullScreen() {
+    return (
+      window.innerWidth >= screen.width - 10 &&
+      window.innerHeight >= screen.height - 10
+    );
+  }
+
+  // Helper to dispatch fullscreenchange event
+  function dispatchFullScreenChange() {
+    setTimeout(function () {
+      window._roverIsFullScreen = checkFullScreen();
+      var event = new Event("fullscreenchange", { bubbles: true });
+      document.dispatchEvent(event);
+    }, 100);
+  }
+
+  // Listen for resize to update fullscreen state
+  window.addEventListener("resize", function () {
+    var wasFullScreen = window._roverIsFullScreen;
+    window._roverIsFullScreen = checkFullScreen();
+    if (wasFullScreen !== window._roverIsFullScreen) {
+      var event = new Event("fullscreenchange", { bubbles: true });
+      document.dispatchEvent(event);
+    }
+  });
+
+  // Shim document.fullscreenElement
+  Object.defineProperty(document, "fullscreenElement", {
+    get: function () {
+      return window._roverIsFullScreen ? document.body : null;
+    },
+    configurable: true,
+  });
+
+  // Shim Element.prototype.requestFullscreen
+  Element.prototype.requestFullscreen = function () {
+    if (!window._roverIsFullScreen) {
+      if (typeof window.toggle_fullscreen === "function") {
+        window.toggle_fullscreen().then(dispatchFullScreenChange);
+      }
+    }
+    return Promise.resolve();
+  };
+
+  // Shim document.exitFullscreen
+  document.exitFullscreen = function () {
+    if (window._roverIsFullScreen) {
+      if (typeof window.toggle_fullscreen === "function") {
+        window.toggle_fullscreen().then(dispatchFullScreenChange);
+      }
+    }
+    return Promise.resolve();
+  };
+
   // Emulate global nw object for NW.js compatibility (used by Utils.isOptionValid, etc.)
   if (typeof window.nw === "undefined") {
-    // Track fullscreen state
-    window._roverIsFullScreen = false;
-
-    // Helper to check fullscreen based on window size
-    function checkFullScreen() {
-      return (
-        window.innerWidth >= screen.width - 10 &&
-        window.innerHeight >= screen.height - 10
-      );
-    }
-
-    // Helper to dispatch fullscreenchange event
-    function dispatchFullScreenChange() {
-      setTimeout(function () {
-        window._roverIsFullScreen = checkFullScreen();
-        var event = new Event("fullscreenchange", { bubbles: true });
-        document.dispatchEvent(event);
-      }, 100);
-    }
-
-    // Listen for resize to update fullscreen state
-    window.addEventListener("resize", function () {
-      var wasFullScreen = window._roverIsFullScreen;
-      window._roverIsFullScreen = checkFullScreen();
-      if (wasFullScreen !== window._roverIsFullScreen) {
-        var event = new Event("fullscreenchange", { bubbles: true });
-        document.dispatchEvent(event);
-      }
-    });
-
     window.nw = {
       Window: {
         get: function () {
@@ -523,21 +533,33 @@
       }
       if (moduleName === "fs") {
         // fs module using native bindings for actual file operations
-        // Caches are initialized in the startup code above
 
         return {
           existsSync: function (filePath) {
-            // Pure cache-based check - no XHR means no 404 errors
+            // NW.js-compatible sync file existence check via XHR to virtual host
+            // This is blocking, just like Node.js fs.existsSync
             if (!filePath) return false;
-
-            // If path ends with / or \, it's a directory check
-            if (filePath.endsWith("/") || filePath.endsWith("\\")) {
-              return !!window._roverCreatedDirs[filePath];
+            
+            try {
+              // Convert Windows path to virtual host URL
+              var url = filePath;
+              if (filePath.indexOf(":") > -1) {
+                var baseDir = window.__roverBaseDir || "";
+                if (baseDir && filePath.indexOf(baseDir) === 0) {
+                  url = "http://rover.assets/" + filePath.substring(baseDir.length + 1).replace(/\\/g, "/");
+                }
+              } else {
+                url = "http://rover.assets/" + filePath.replace(/\\/g, "/");
+              }
+              
+              var xhr = new XMLHttpRequest();
+              xhr.open("HEAD", url, false); // Synchronous HEAD request (lighter than GET)
+              xhr.send(null);
+              
+              return xhr.status === 200;
+            } catch (e) {
+              return false;
             }
-
-            // For files, check cache only
-            // Cache is pre-populated on startup via fs_list_dir
-            return !!window._roverWrittenFiles[filePath];
           },
           readFileSync: function (filePath, options) {
             // Silent operation
@@ -561,8 +583,6 @@
               xhr.send(null);
 
               if (xhr.status === 200) {
-                // Track that this file exists
-                window._roverWrittenFiles[filePath] = true;
                 return xhr.responseText;
               } else {
                 // File not found - normal for non-existent saves
@@ -574,10 +594,8 @@
             }
           },
           writeFileSync: function (path, data) {
-            // Track this file as written
-            window._roverWrittenFiles[path] = true;
-
             // Call native async binding (fire and forget)
+            // NW.js writeFileSync is blocking, but we can only do async here
             if (typeof window.fs_write_file === "function") {
               window
                 .fs_write_file(path, data)
@@ -586,8 +604,6 @@
                 })
                 .catch(function (err) {
                   console.error("[Rover] Failed to write file: " + path, err);
-                  // Remove from tracking on failure
-                  delete window._roverWrittenFiles[path];
                 });
             } else {
               console.error(
@@ -596,21 +612,17 @@
             }
           },
           mkdirSync: function (path, options) {
-            // Silent mkdir
+            // Create directory via native binding
             if (typeof window.fs_mkdir === "function") {
               window
                 .fs_mkdir(path)
                 .then(function () {
-                  window._roverCreatedDirs[path] = true;
                   // Success - silent
                 })
                 .catch(function (err) {
                   // Directory might already exist, that's OK
-                  window._roverCreatedDirs[path] = true;
                 });
             }
-            // Mark as created immediately to avoid duplicate calls
-            window._roverCreatedDirs[path] = true;
           },
           unlinkSync: function (path) {
             if (typeof window.fs_unlink === "function") {
