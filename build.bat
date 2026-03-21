@@ -1,6 +1,6 @@
 @echo off
 SET icon=%~dp0assets\icons\application.ico
-SET fileversion=1.0
+SET fileversion=2.0
 SET filedescription=Rover
 echo ================================================
 echo   Building Rover
@@ -26,15 +26,15 @@ pause
 
 :debug
 ECHO Compile debug
-nim c -f --opt:size --app:gui "%srcdir%\rover.nim"
+nim c -f --threads:on --opt:size --app:gui "%srcdir%\rover.nim"
 goto done
 
 :release
 ECHO Compile release
-nim c -f -d:release --opt:size --app:gui "%srcdir%\rover.nim"
+nim c -f -d:release --threads:on --opt:size --app:gui "%srcdir%\rover.nim"
 goto done
 
 :done
 "%rcedit%" "%srcdir%\rover.exe" --set-icon "%icon%" --set-file-version "%fileversion%" --set-product-version "%fileversion%" --set-version-string "FileDescription" "%filedescription%"
-"%upx%" --no-env --ultra-brute --overlay=strip "%srcdir%\rover.exe"
+rem "%upx%" --no-env --overlay=strip "%srcdir%\rover.exe"
 pause

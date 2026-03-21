@@ -210,7 +210,7 @@ const
   weNotFound*          = WebviewErrorNotFound
 
 proc create*(debug: cint = cint isDebug;
-    window: pointer = nil; width: cint = 640; height: cint = 480): Webview {.cdecl, importc: "webview_create", webview.}
+    window: pointer = nil; width: cint = 640; height: cint = 480; initialState: cint = 0): Webview {.cdecl, importc: "webview_create", webview.}
   ## Creates a new webview instance.
   ## 
   ## :debug: Enable developer tools if supported by the backend.
@@ -327,6 +327,11 @@ proc setVirtualHostNameToFolderMapping*(w: Webview; hostName: cstring; folderPat
   ## :hostName: The virtual host name (e.g. "app.local")
   ## :folderPath: The local folder path to map to
   ## :accessKind: 0=Deny, 1=Allow, 2=DenyCors
+
+proc getSavedPlacement*(w: Webview; placement: pointer): void {.cdecl, importc: "webview_get_saved_placement", webview.}
+  ## Retrieves the saved window placement from webview creation.
+  ## Only meaningful when created with initialState=2 (fullscreen).
+  ## The placement pointer must point to a WINDOWPLACEMENT struct.
 
 proc openDevTools*(w: Webview): void {.cdecl, importc: "webview_open_devtools", webview.}
   ## Opens the Developer Tools window.
@@ -458,9 +463,9 @@ proc `title=`*(w: Webview; title: string): WebviewError {.inline, discardable.} 
 
   w.setTitle(title)
 
-proc newWebview*(debug: bool = isDebug; window: pointer = nil; width: int = 640; height: int = 480): Webview {.inline.} =
+proc newWebview*(debug: bool = isDebug; window: pointer = nil; width: int = 640; height: int = 480; initialState: int = 0): Webview {.inline.} =
   ## Alias of `create()`
 
-  create(cint debug, window, cint width, cint height)
+  create(cint debug, window, cint width, cint height, cint initialState)
 
 export JsonNode

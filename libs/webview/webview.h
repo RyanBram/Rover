@@ -117,7 +117,12 @@ typedef void *webview_t;
 // passed here. Returns null on failure. Creation can fail for various reasons
 // such as when required runtime dependencies are missing or when window creation
 // fails.
-WEBVIEW_API webview_t webview_create(int debug, void *window, int width, int height);
+WEBVIEW_API webview_t webview_create(int debug, void *window, int width, int height, int initial_state);
+
+// Retrieves the saved window placement (only meaningful after creating with
+// initial_state=2 i.e. fullscreen). The placement pointer must point to a
+// WINDOWPLACEMENT struct.
+WEBVIEW_API void webview_get_saved_placement(webview_t w, void *placement);
 
 // Destroys a webview and closes the native window.
 WEBVIEW_API void webview_destroy(webview_t w);
@@ -2492,7 +2497,7 @@ private:
 
 class win32_edge_engine {
 public:
-  win32_edge_engine(bool debug, void *window, int width = 640, int height = 480) {
+  win32_edge_engine(bool debug, void *window, int width = 640, int height = 480, int initial_state = 0) {
     if (!is_webview2_available()) {
       return;
     }
@@ -2667,8 +2672,29 @@ public:
     CreateWindowExW(0, L"webview_message", nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE,
                     nullptr, hInstance, this);
 
-    // Show the properly sized and centered window
-    ShowWindow(m_window, SW_SHOW);
+    // Show the window in the requested initial state
+    if (initial_state == 1) {
+      // Maximize: window appears maximized immediately
+      ShowWindow(m_window, SW_SHOWMAXIMIZED);
+    } else if (initial_state == 2) {
+      // Fullscreen: save normal placement, strip decorations, cover monitor
+      m_saved_placement.length = sizeof(WINDOWPLACEMENT);
+      GetWindowPlacement(m_window, &m_saved_placement);
+      LONG style = GetWindowLong(m_window, GWL_STYLE);
+      SetWindowLong(m_window, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+      MONITORINFO fmi{};
+      fmi.cbSize = sizeof(fmi);
+      GetMonitorInfo(MonitorFromWindow(m_window, MONITOR_DEFAULTTOPRIMARY), &fmi);
+      SetWindowPos(m_window, HWND_TOP,
+                   fmi.rcMonitor.left, fmi.rcMonitor.top,
+                   fmi.rcMonitor.right - fmi.rcMonitor.left,
+                   fmi.rcMonitor.bottom - fmi.rcMonitor.top,
+                   SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+      ShowWindow(m_window, SW_SHOW);
+    } else {
+      // Normal: show at configured size
+      ShowWindow(m_window, SW_SHOW);
+    }
     UpdateWindow(m_window);
     SetFocus(m_window);
 
@@ -2781,6 +2807,12 @@ public:
     if (m_webview->QueryInterface(IID_ICoreWebView2_2, (void **)&wv2) == S_OK) {
       wv2->OpenDevToolsWindow();
       wv2->Release();
+    }
+  }
+
+  void get_saved_placement(void *out) const {
+    if (out) {
+      *static_cast<WINDOWPLACEMENT *>(out) = m_saved_placement;
     }
   }
 
@@ -2924,6 +2956,7 @@ private:
   com_init_wrapper m_com_init;
   HWND m_window = nullptr;
   HWND m_message_window = nullptr;
+  WINDOWPLACEMENT m_saved_placement{};
   POINT m_minsz = POINT{0, 0};
   POINT m_maxsz = POINT{0, 0};
   DWORD m_main_thread = GetCurrentThreadId();
@@ -2946,8 +2979,8 @@ namespace webview {
 
 class webview : public browser_engine {
 public:
-  webview(bool debug = false, void *wnd = nullptr, int width = 640, int height = 480)
-      : browser_engine(debug, wnd, width, height) {}
+  webview(bool debug = false, void *wnd = nullptr, int width = 640, int height = 480, int initial_state = 0)
+      : browser_engine(debug, wnd, width, height, initial_state) {}
 
   void navigate(const std::string &url) {
     if (url.empty()) {
@@ -3068,13 +3101,17 @@ private:
 };
 } // namespace webview
 
-WEBVIEW_API webview_t webview_create(int debug, void *wnd, int width, int height) {
-  auto w = new webview::webview(debug, wnd, width, height);
+WEBVIEW_API webview_t webview_create(int debug, void *wnd, int width, int height, int initial_state) {
+  auto w = new webview::webview(debug, wnd, width, height, initial_state);
   if (!w->window()) {
     delete w;
     return nullptr;
   }
   return w;
+}
+
+WEBVIEW_API void webview_get_saved_placement(webview_t w, void *placement) {
+  static_cast<webview::webview *>(w)->get_saved_placement(placement);
 }
 
 WEBVIEW_API void webview_destroy(webview_t w) {

@@ -1,6 +1,7 @@
 {
   "name": "rover-app",
   "main": "index.html",
+  "httpServer": false,
   "window": {
     "title": "Rover App",
     "icon": "icon/icon.png",
