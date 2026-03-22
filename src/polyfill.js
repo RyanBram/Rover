@@ -16,106 +16,6 @@
     }
   }
 
-  // Determine base path from current document URL
-  // This works because virtual host mapping maps rover.assets to the game directory
-  var basePath = ".";
-  try {
-    // Extract path from URL like http://rover.assets/index.html
-    var url = window.location.href;
-    if (url.indexOf("rover.assets") > -1) {
-      // We're using virtual host - path is relative to exe directory
-      basePath = ".";
-    }
-  } catch (e) {}
-
-  // =========================================================================
-  // FULLSCREEN LAYOUT HANDLER
-  // Uses standard browser Fullscreen API - works with any content, not just Unity
-  // =========================================================================
-
-  var _originalFullscreenStyles = null;
-
-  function applyFullscreenLayout() {
-    // Find common game canvas patterns (Unity uses #unity-canvas)
-    var canvas =
-      document.getElementById("unity-canvas") ||
-      document.querySelector("canvas");
-    var container =
-      document.getElementById("unity-container") ||
-      (canvas ? canvas.parentElement : null);
-    var footer = document.getElementById("unity-footer");
-
-    if (!canvas) return;
-
-    // Save original styles first time
-    if (!_originalFullscreenStyles) {
-      _originalFullscreenStyles = {
-        containerClass: container ? container.className : "",
-        containerStyle: container ? container.getAttribute("style") || "" : "",
-        canvasStyle: canvas.getAttribute("style") || "",
-        footerDisplay: footer ? footer.style.display : "",
-      };
-    }
-
-    // Apply fullscreen styles
-    if (container) {
-      container.style.position = "absolute";
-      container.style.left = "0";
-      container.style.top = "0";
-      container.style.right = "0";
-      container.style.bottom = "0";
-      container.style.transform = "none";
-      container.style.width = "100%";
-      container.style.height = "100%";
-    }
-
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
-
-    // Hide footer in fullscreen
-    if (footer) {
-      footer.style.display = "none";
-    }
-
-    document.body.style.overflow = "hidden";
-  }
-
-  function restoreNormalLayout() {
-    var canvas =
-      document.getElementById("unity-canvas") ||
-      document.querySelector("canvas");
-    var container =
-      document.getElementById("unity-container") ||
-      (canvas ? canvas.parentElement : null);
-    var footer = document.getElementById("unity-footer");
-
-    if (!canvas || !_originalFullscreenStyles) return;
-
-    // Restore original styles
-    if (container) {
-      container.className = _originalFullscreenStyles.containerClass;
-      container.setAttribute("style", _originalFullscreenStyles.containerStyle);
-    }
-
-    canvas.setAttribute("style", _originalFullscreenStyles.canvasStyle);
-
-    if (footer) {
-      footer.style.display = _originalFullscreenStyles.footerDisplay;
-    }
-
-    document.body.style.overflow = "";
-  }
-
-  // Listen to STANDARD browser fullscreen event
-  // This works with Unity's own fullscreen button AND our F4 key
-  document.addEventListener("fullscreenchange", function () {
-    if (document.fullscreenElement) {
-      applyFullscreenLayout();
-    } else {
-      restoreNormalLayout();
-    }
-  });
-
   // =========================================================================
   // NODE.JS GLOBAL POLYFILLS FOR UNITY WEBGL
   // Unity WebGL builds may reference __dirname and __filename
@@ -141,27 +41,6 @@
     window.__filename = window.location.pathname || "/index.html";
   }
 
-  // Also define as global (non-window) for strict mode scripts
-  if (typeof __dirname === "undefined") {
-    try {
-      Object.defineProperty(window, "__dirname", {
-        value: window.__dirname,
-        writable: true,
-        configurable: true,
-      });
-    } catch (e) {}
-  }
-
-  if (typeof __filename === "undefined") {
-    try {
-      Object.defineProperty(window, "__filename", {
-        value: window.__filename,
-        writable: true,
-        configurable: true,
-      });
-    } catch (e) {}
-  }
-
   // Emulate process object for NW.js compatibility
   if (typeof window.process === "undefined") {
     // Store start time for hrtime calculations
@@ -174,11 +53,10 @@
         nw: "0.45.0",
       },
       mainModule: {
-        // This will be updated by native binding
-        filename: basePath + "/index.html",
+        filename: "./index.html", // Updated by initBaseDir() below
       },
       cwd: function () {
-        return basePath;
+        return window.__roverBaseDir || ".";
       },
       on: function () {},
       argv: Array.isArray(window.__roverArgv) ? window.__roverArgv.slice() : [],
@@ -239,88 +117,46 @@
     };
   }
 
-  // Get actual exe directory.
-  // In HTTP server mode, Rover injects window.__roverBaseDir directly via the
-  // w.init preamble script before this polyfill runs. If not yet set, fall back
-  // to a sync XHR (older builds) or async native binding (VirtualHost mode).
+  // __roverBaseDir is injected by the Rover preamble before this polyfill runs.
+  // Ensure it exists as a string in case of about:blank / early eval.
   if (typeof window.__roverBaseDir !== "string") {
     window.__roverBaseDir = "";
   }
 
   (function initBaseDir() {
-    // Skip on about:blank / non-HTTP pages — the polyfill runs via w.init()
-    // on every new document, including the initial about:blank before navigation.
+    // Skip on about:blank / non-HTTP pages.
     if (
       window.location.protocol !== "http:" &&
       window.location.protocol !== "https:"
     )
       return;
 
-    // Already set by the Rover preamble injection — just sync process.mainModule
+    // HTTP server mode fallback: __roverBaseDir may not be in preamble for older builds.
+    if (!window.__roverBaseDir &&
+        (window.location.hostname === "localhost" ||
+         window.location.hostname === "127.0.0.1")) {
+      try {
+        var xhrBase = new XMLHttpRequest();
+        xhrBase.open("GET", window.location.origin + "/__get_base_dir__", false);
+        xhrBase.send(null);
+        if (xhrBase.status === 200) window.__roverBaseDir = xhrBase.responseText;
+      } catch (e) {}
+    }
+
+    // Sync process.mainModule.filename from package.json "main" field.
     if (window.__roverBaseDir) {
       var mainEntry = "index.html";
       try {
-        var xhr2 = new XMLHttpRequest();
-        xhr2.open("GET", window.location.origin + "/package.json", false);
-        xhr2.send(null);
-        if (xhr2.status === 200) {
-          var pkg = JSON.parse(xhr2.responseText);
+        var xhrPkg = new XMLHttpRequest();
+        xhrPkg.open("GET", window.location.origin + "/package.json", false);
+        xhrPkg.send(null);
+        if (xhrPkg.status === 200) {
+          var pkg = JSON.parse(xhrPkg.responseText);
           if (pkg.main) mainEntry = pkg.main;
         }
       } catch (e) {}
       window.process.mainModule.filename =
         window.__roverBaseDir + "\\" + mainEntry.replace(/\//g, "\\");
-      return;
-    }
-
-    var isHttpServerMode =
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1";
-
-    if (isHttpServerMode) {
-      // Sync fetch fallback (older Rover builds without preamble injection)
-      try {
-        var xhr = new XMLHttpRequest();
-        xhr.open("GET", window.location.origin + "/__get_base_dir__", false);
-        xhr.send(null);
-        if (xhr.status === 200) {
-          window.__roverBaseDir = xhr.responseText;
-        }
-      } catch (e) {}
-    }
-
-    // Set process.mainModule.filename to match NWjs behavior:
-    // Read package.json "main" field so dirname-counting works the same way.
-    if (window.__roverBaseDir) {
-      var mainEntry2 = "index.html";
-      try {
-        var xhr3 = new XMLHttpRequest();
-        xhr3.open("GET", window.location.origin + "/package.json", false);
-        xhr3.send(null);
-        if (xhr3.status === 200) {
-          var pkg2 = JSON.parse(xhr3.responseText);
-          if (pkg2.main) mainEntry2 = pkg2.main;
-        }
-      } catch (e) {}
-      window.process.mainModule.filename =
-        window.__roverBaseDir + "\\" + mainEntry2.replace(/\//g, "\\");
-    }
-
-    // Fallback: async init via native binding (VirtualHost mode)
-    if (!window.__roverBaseDir) {
-      (function asyncFallback() {
-        if (typeof window.get_exe_directory === "function") {
-          window
-            .get_exe_directory()
-            .then(function (dir) {
-              window.__roverBaseDir = dir;
-              window.process.mainModule.filename = dir + "\\index.html";
-            })
-            .catch(function () {});
-        } else {
-          setTimeout(asyncFallback, 10);
-        }
-      })();
     }
   })();
 
@@ -334,6 +170,81 @@
   // Track fullscreen state internally
   window._roverIsFullScreen = window.__roverInitialFullscreen || false;
 
+  // Track whether the app manages its own fullscreen layout.
+  // true  → requestFullscreen was called on document.body, or via nw.Window API
+  //         (e.g. RPG Maker) — the app handles canvas resize/centering itself.
+  // false → requestFullscreen was called on a specific sub-element (e.g. Unity canvas)
+  //         — Rover must stretch that element to fill the screen.
+  var _fullscreenManagedByApp = false;
+
+  var _originalFullscreenStyles = null;
+
+  function applyFullscreenLayout() {
+    var canvas =
+      document.getElementById("unity-canvas") ||
+      document.querySelector("canvas");
+    var container =
+      document.getElementById("unity-container") ||
+      (canvas ? canvas.parentElement : null);
+    var footer = document.getElementById("unity-footer");
+
+    if (!canvas) return;
+
+    if (!_originalFullscreenStyles) {
+      _originalFullscreenStyles = {
+        containerClass: container ? container.className : "",
+        containerStyle: container ? container.getAttribute("style") || "" : "",
+        canvasStyle: canvas.getAttribute("style") || "",
+        footerDisplay: footer ? footer.style.display : "",
+      };
+    }
+
+    if (container) {
+      container.style.position = "absolute";
+      container.style.left = "0";
+      container.style.top = "0";
+      container.style.right = "0";
+      container.style.bottom = "0";
+      container.style.transform = "none";
+      container.style.width = "100%";
+      container.style.height = "100%";
+    }
+
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+
+    if (footer) {
+      footer.style.display = "none";
+    }
+
+    document.body.style.overflow = "hidden";
+  }
+
+  function restoreNormalLayout() {
+    var canvas =
+      document.getElementById("unity-canvas") ||
+      document.querySelector("canvas");
+    var container =
+      document.getElementById("unity-container") ||
+      (canvas ? canvas.parentElement : null);
+    var footer = document.getElementById("unity-footer");
+
+    if (!canvas || !_originalFullscreenStyles) return;
+
+    if (container) {
+      container.className = _originalFullscreenStyles.containerClass;
+      container.setAttribute("style", _originalFullscreenStyles.containerStyle);
+    }
+
+    canvas.setAttribute("style", _originalFullscreenStyles.canvasStyle);
+
+    if (footer) {
+      footer.style.display = _originalFullscreenStyles.footerDisplay;
+    }
+
+    document.body.style.overflow = "";
+  }
+
   // Helper to check fullscreen based on window size
   function checkFullScreen() {
     return (
@@ -342,12 +253,21 @@
     );
   }
 
-  // Helper to dispatch fullscreenchange event
+  // Helper to dispatch fullscreenchange event and optionally apply layout
   function dispatchFullScreenChange() {
     setTimeout(function () {
-      window._roverIsFullScreen = checkFullScreen();
+      var entering = checkFullScreen();
+      window._roverIsFullScreen = entering;
       var event = new Event("fullscreenchange", { bubbles: true });
       document.dispatchEvent(event);
+      // Only apply/restore layout when the app does NOT manage it itself
+      if (!_fullscreenManagedByApp) {
+        if (entering) {
+          applyFullscreenLayout();
+        } else {
+          restoreNormalLayout();
+        }
+      }
     }, 100);
   }
 
@@ -372,6 +292,9 @@
   // Shim Element.prototype.requestFullscreen
   Element.prototype.requestFullscreen = function () {
     if (!window._roverIsFullScreen) {
+      // body-level call → app manages its own layout (e.g. RPG Maker)
+      // sub-element call → Rover must stretch the element (e.g. Unity canvas)
+      _fullscreenManagedByApp = (this === document.body);
       if (typeof window.toggle_fullscreen === "function") {
         window.toggle_fullscreen().then(dispatchFullScreenChange);
       }
@@ -407,12 +330,14 @@
               callNative("toggle_devtools");
             },
             toggleFullscreen: function () {
+              _fullscreenManagedByApp = true; // NW.js API → app-managed layout
               callNative("toggle_fullscreen");
               dispatchFullScreenChange();
             },
             // NW.js fullscreen API
             enterFullscreen: function () {
               if (!window._roverIsFullScreen) {
+                _fullscreenManagedByApp = true; // NW.js API → app-managed layout
                 if (typeof window.toggle_fullscreen === "function") {
                   window.toggle_fullscreen().then(dispatchFullScreenChange);
                 }
@@ -420,6 +345,7 @@
             },
             leaveFullscreen: function () {
               if (window._roverIsFullScreen) {
+                _fullscreenManagedByApp = true; // NW.js API → app-managed layout
                 if (typeof window.toggle_fullscreen === "function") {
                   window.toggle_fullscreen().then(dispatchFullScreenChange);
                 }
@@ -609,14 +535,17 @@
                   callNative("toggle_devtools");
                 },
                 toggleFullscreen: function () {
+                  _fullscreenManagedByApp = true;
                   callNative("toggle_fullscreen");
+                  dispatchFullScreenChange();
                 },
                 enterFullscreen: function () {
                   if (
                     !window._roverIsFullScreen &&
                     typeof window.toggle_fullscreen === "function"
                   ) {
-                    window.toggle_fullscreen();
+                    _fullscreenManagedByApp = true;
+                    window.toggle_fullscreen().then(dispatchFullScreenChange);
                   }
                 },
                 leaveFullscreen: function () {
@@ -624,7 +553,8 @@
                     window._roverIsFullScreen &&
                     typeof window.toggle_fullscreen === "function"
                   ) {
-                    window.toggle_fullscreen();
+                    _fullscreenManagedByApp = true;
+                    window.toggle_fullscreen().then(dispatchFullScreenChange);
                   }
                 },
                 get isFullscreen() {
@@ -827,9 +757,19 @@
         );
 
         // Helper: fire-and-forget native async binding, like the old polyfill did.
+        // Path arguments for fs_* bindings are percent-encoded to survive the
+        // WebView2 ExecuteScript bridge without corrupting non-ASCII characters
+        // (e.g., Japanese directory/file names). The Nim side decodeUrl()s them.
         function _nativeCall(bindingName, args) {
           if (typeof window[bindingName] === "function") {
-            return window[bindingName].apply(window, args)
+            var encoded = args.slice();
+            if (bindingName.indexOf("fs_") === 0 && encoded.length > 0) {
+              encoded[0] = encodeURIComponent(encoded[0]);
+              if ((bindingName === "fs_rename" || bindingName === "fs_copy_file") && encoded.length > 1) {
+                encoded[1] = encodeURIComponent(encoded[1]);
+              }
+            }
+            return window[bindingName].apply(window, encoded)
               .catch(function(e) { console.warn("[Rover] " + bindingName + " failed:", e); });
           }
           console.warn("[Rover] native binding not available: " + bindingName);
@@ -954,15 +894,6 @@
 
         // Also expose prefetchTreeStat so db.js can call it before PGlite init (legacy compat)
         window.__roverPrefetchTreeStat = _prefetchTreeStat;
-
-        // Track fd→path mappings for fstatSync
-        var _fdPaths = {};
-
-
-
-
-
-
 
         return {
           // =================================================================
@@ -1729,7 +1660,6 @@
   }
 
   // Override window.close to ensure app termination
-  const _originalClose = window.close;
   window.close = function () {
     callNative("exit_app");
   };
