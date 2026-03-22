@@ -46,6 +46,11 @@ var isFullscreen = false
 var restoreToMaximize = false  # When both maximize+fullscreen are set: exit fullscreen → maximize
 var flushAckReceived = false  # Set by /__rover_flush_ack__ binding to signal JS flush complete
 
+# Dynamic VirtualHost directory mappings — maps arbitrary local directories
+# to rover.ext.N hostnames so JS can fetch binary files without base64.
+var externalHostMappings: Table[string, string]  # normalized dirPath -> hostName
+var nextExtHostIdx = 0
+
 # HTTP Server threading support
 var serverThread: Thread[tuple[port: int, baseDir: string]]
 var serverRunning = false
@@ -1022,7 +1027,7 @@ proc main() =
     try:
       # Parse JSON array: [path, content]
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       let content = args[1].getStr()
       writeFile(filePath, content)
       w.webviewReturn(id, 0, "true")
@@ -1036,7 +1041,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       let b64Content = args[1].getStr()
       let binaryData = decode(b64Content)
       writeFile(filePath, binaryData)
@@ -1050,7 +1055,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       let content = readFile(filePath).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")
       w.webviewReturn(id, 0, cstring(&"\"{content}\""))
     except:
@@ -1062,7 +1067,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       let exists = fileExists(filePath) or dirExists(filePath)
       w.webviewReturn(id, 0, cstring(if exists: "true" else: "false"))
     except:
@@ -1073,7 +1078,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let dirPath = args[0].getStr()
+      let dirPath = decodeUrl(args[0].getStr())
       createDir(dirPath)
       w.webviewReturn(id, 0, "true")
     except:
@@ -1085,7 +1090,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       removeFile(filePath)
       w.webviewReturn(id, 0, "true")
     except:
@@ -1097,13 +1102,14 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let dirPath = args[0].getStr()
+      let dirPath = decodeUrl(args[0].getStr())
       var files: seq[string] = @[]
       
       if dirExists(dirPath):
         for kind, path in walkDir(dirPath):
           if kind in {pcFile, pcLinkToFile}:
-            files.add(extractFilename(path))
+            # Percent-encode filenames to survive the WebView2 binding bridge
+            files.add(encodeUrl(extractFilename(path), usePlus=false))
       
       # Return as JSON array
       let jsonResult = $(%files)
@@ -1118,12 +1124,13 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let dirPath = args[0].getStr()
+      let dirPath = decodeUrl(args[0].getStr())
       var dirs: seq[string] = @[]
       if dirExists(dirPath):
         for kind, path in walkDir(dirPath):
           if kind in {pcDir, pcLinkToDir}:
-            dirs.add(extractFilename(path))
+            # Percent-encode directory names to survive the WebView2 binding bridge
+            dirs.add(encodeUrl(extractFilename(path), usePlus=false))
       let jsonResult = $(%dirs)
       w.webviewReturn(id, 0, cstring(jsonResult))
     except:
@@ -1135,7 +1142,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       if not fileExists(filePath):
         w.webviewReturn(id, 1, "\"ENOENT\"")
         return
@@ -1181,8 +1188,8 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let oldPath = args[0].getStr()
-      let newPath = args[1].getStr()
+      let oldPath = decodeUrl(args[0].getStr())
+      let newPath = decodeUrl(args[1].getStr())
       moveFile(oldPath, newPath)
       w.webviewReturn(id, 0, "true")
     except:
@@ -1194,7 +1201,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       let content = args[1].getStr()
       let f = open(filePath, fmAppend)
       f.write(content)
@@ -1209,8 +1216,8 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let srcPath = args[0].getStr()
-      let destPath = args[1].getStr()
+      let srcPath = decodeUrl(args[0].getStr())
+      let destPath = decodeUrl(args[1].getStr())
       copyFile(srcPath, destPath)
       w.webviewReturn(id, 0, "true")
     except:
@@ -1222,7 +1229,7 @@ proc main() =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
-      let filePath = args[0].getStr()
+      let filePath = decodeUrl(args[0].getStr())
       let info = getFileInfo(filePath)
       let jsonResult = %*{
         "size": info.size,
@@ -1230,6 +1237,48 @@ proc main() =
         "isDirectory": info.kind == pcDir
       }
       w.webviewReturn(id, 0, cstring($jsonResult))
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
+  # =========================================================================
+  # DYNAMIC VIRTUALHOST MAPPING (binary-safe file I/O without base64)
+  # Maps an arbitrary local directory to a rover.ext.N virtual hostname so
+  # JS can fetch binary files directly via HTTP — zero base64 overhead.
+  # =========================================================================
+
+  w.webviewBind("fs_map_dir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let dirPath = decodeUrl(args[0].getStr())
+
+      # Normalize path: use native separators, remove trailing slash
+      var normPath = dirPath.replace('/', '\\')
+      while normPath.endsWith("\\") and normPath.len > 3:  # keep "C:\"
+        normPath = normPath[0..^2]
+
+      if not dirExists(normPath):
+        w.webviewReturn(id, 1, "\"Directory not found\"")
+        return
+
+      # Reuse existing mapping for the same directory
+      if normPath in externalHostMappings:
+        let host = externalHostMappings[normPath]
+        let url = "http://" & host & "/"
+        w.webviewReturn(id, 0, cstring("\"" & url & "\""))
+        return
+
+      # Create new VirtualHost mapping
+      let hostName = "rover.ext." & $nextExtHostIdx
+      inc nextExtHostIdx
+      w.setVirtualHostNameToFolderMapping(cstring(hostName), cstring(normPath), 1)
+      externalHostMappings[normPath] = hostName
+      echo &"[VHOST] Mapped {normPath} -> http://{hostName}/"
+
+      let url = "http://" & hostName & "/"
+      w.webviewReturn(id, 0, cstring("\"" & url & "\""))
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
       w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
@@ -1373,7 +1422,6 @@ proc main() =
   # hwnd already obtained above for icon setting
   
   # Register Hotkeys
-  RegisterHotKey(hwnd, 1, MOD_NOREPEAT, VK_F4)
   RegisterHotKey(hwnd, 2, MOD_NOREPEAT, VK_F12)
 
   # Bind __rover_set_flush_ack so JS can signal that the final MEMFS flush completed
@@ -1403,9 +1451,7 @@ proc main() =
         w.eval("if(typeof window.__roverOnClose==='function'){window.__roverOnClose();}else{window.__rover_set_flush_ack();}".cstring)
         continue  # Return control to event loop — do NOT block
       if msg.message == WM_HOTKEY:
-        if msg.wParam == 1:
-          toggleFullscreen(hwnd)
-        elif msg.wParam == 2:
+        if msg.wParam == 2:
           w.openDevTools()
       TranslateMessage(msg.addr)
       DispatchMessage(msg.addr)
