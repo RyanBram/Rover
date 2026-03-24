@@ -1,0 +1,78 @@
+[
+    /* Test count: 4 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <button>1</foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 8, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 15, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 15, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <button>
+                  "1"
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <foo>1<p>2</foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 16, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 16, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <foo>
+                  "1"
+                  <p>
+                    "2"
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <dd>1</foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 4, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 11, "id": "unexpected-end-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <dd>
+                  "1"
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <foo>1<dd>2</foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 17, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 17, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <foo>
+                  "1"
+                  <dd>
+                    "2"
+        $DATA
+    },
+]

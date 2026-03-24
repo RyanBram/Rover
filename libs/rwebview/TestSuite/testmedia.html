@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>RPG Maker — Title Screen</title>
+<link rel="stylesheet" href="fonts/gamefont.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; image-rendering: pixelated;
+            image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<script>
+// ============================================================
+// RPG Maker Title Screen Demo
+// Tests: Canvas2D blit, Image, fillText, keyboard, mouse, audio
+// ============================================================
+
+// ── Diagnostic log ─────────────────────────────────────────
+var diagLog = [];
+function diag(msg) {
+  console.log('[DIAG] ' + msg);
+  diagLog.push(msg);
+}
+
+diag('window=' + window.innerWidth + 'x' + window.innerHeight);
+
+var canvas = document.createElement('canvas');
+// Fixed internal resolution — Canvas2D pixel ops stay cheap; GL blit upscales.
+var BASE_W = 816, BASE_H = 624;
+var W = BASE_W;
+var H = BASE_H;
+canvas.width  = W;
+canvas.height = H;
+// getContext MUST be called after canvas.width/height are set so the
+// pixel buffer is allocated at the correct 816×624 resolution, not window size.
+var ctx    = canvas.getContext('2d');
+document.body.appendChild(canvas);
+// Actual window dimensions for mouse coordinate mapping
+var winW = window.innerWidth  || W;
+var winH = window.innerHeight || H;
+diag('canvas=' + W + 'x' + H + ' window=' + winW + 'x' + winH);
+
+// nativeResize removed — canvas stays at fixed BASE_W x BASE_H.
+// GL blit pipeline stretches the texture to the window via glViewport.
+
+// ── State ──────────────────────────────────────────────────
+var titleImage = null;
+var imageReady = false;
+var assetsLoaded = 0;
+var assetsTotal  = 4;
+
+var audioCtx    = null;
+var musicBuffer = null;
+var musicSource = null;
+var musicGain   = null;
+var musicStarted = false;
+
+var seCursorBuf   = null;
+var seDecisionBuf = null;
+
+// ── Menu ───────────────────────────────────────────────────
+var menuItems  = ['New Game', 'Continue', 'Options'];
+var menuIndex  = 0;
+var blinkTimer = 0;
+var blinkOn    = true;
+var frameCount = 0;
+var bgmMuted   = false;
+
+// Menu hit-rects rebuilt each render frame; read by mousemove
+var menuRects  = [];
+
+// FPS tracking
+var fpsSampleTime = Date.now();
+var fpsSampleFrames = 0;
+var fpsDisplay  = 0;
+
+// ── GPU / renderer detection ──────────────────────────────────────────
+var gpuName    = 'Querying...';
+var renderMode = 'GPU';
+(function() {
+  try {
+    var glc = document.createElement('canvas');
+    var gl  = glc.getContext('webgl');
+    if (!gl) { gpuName = 'WebGL unavailable'; renderMode = 'CPU?'; return; }
+    // Standard query (always available)
+    var renderer = gl.getParameter(gl.RENDERER) || '';
+    var vendor   = gl.getParameter(gl.VENDOR)   || '';
+    // WEBGL_debug_renderer_info gives unmasked strings when available
+    var ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) {
+      renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || renderer;
+      vendor   = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)   || vendor;
+    }
+    gpuName = renderer || vendor || 'Unknown GPU';
+    // Detect software / CPU rendering by renderer string
+    var lower = renderer.toLowerCase();
+    if (lower.indexOf('llvmpipe')       >= 0 ||
+        lower.indexOf('softpipe')       >= 0 ||
+        lower.indexOf('software')       >= 0 ||
+        lower.indexOf('microsoft basic')>= 0 ||
+        lower.indexOf('swrast')         >= 0) {
+      renderMode = 'CPU (SW)';
+    }
+    diag('GPU renderer: ' + renderer + ' | vendor: ' + vendor +
+         ' | mode: ' + renderMode);
+  } catch(e) {
+    gpuName    = 'GL query error';
+    renderMode = '?';
+    diag('GPU detection error: ' + e);
+  }
+})();
+
+// ── Colours ────────────────────────────────────────────────
+var GOLD  = '#f8d860';
+var WHITE = '#ffffff';
+
+// ── Provisional blit test ──────────────────────────────────
+ctx.fillStyle = '#200020';
+ctx.fillRect(0, 0, W, H);
+
+// ============================================================
+// Window resize handler
+// ============================================================
+window.addEventListener('resize', function() {
+  winW = window.innerWidth  || winW;
+  winH = window.innerHeight || winH;
+  diag('RESIZE win=' + winW + 'x' + winH + ' canvas=' + W + 'x' + H);
+});
+
+// ============================================================
+// Draw helpers
+// ============================================================
+function drawText(text, x, y, size, color, align) {
+  ctx.font      = Math.round(size) + 'px GameFont';
+  ctx.textAlign = align || 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillText(text, x + 1, y + 2);
+  ctx.fillStyle = color || WHITE;
+  ctx.fillText(text, x, y);
+}
+
+function renderHUD() {
+  // Status bar (bottom-right)
+  var muteNote = bgmMuted ? ' [MUTE]' : '';
+  var note = musicStarted ? ('\u266A BGM ON' + muteNote) : '\u25CB BGM OFF';
+  ctx.font = '13px GameFont';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = musicStarted
+    ? (bgmMuted ? 'rgba(220,100,100,0.7)' : 'rgba(248,216,96,0.6)')
+    : 'rgba(255,255,255,0.3)';
+  ctx.fillText(note, W - 10, H - 10);
+
+  // Info bar (top-left): FPS + frame + resolution + GPU
+  ctx.font = '13px GameFont';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(4, 4, 460, 18);
+  // Colour the FPS number: green ≥55, yellow ≥45, red <45
+  var fpsColor = fpsDisplay >= 55 ? 'rgba(160,255,160,0.9)'
+               : fpsDisplay >= 45 ? 'rgba(255,230,80,0.9)'
+               :                    'rgba(255,100,100,0.9)';
+  ctx.fillStyle = fpsColor;
+  // Truncate gpuName to keep the bar tidy (max ~28 chars)
+  var gpuShort = gpuName.length > 28 ? gpuName.slice(0, 27) + '\u2026' : gpuName;
+  ctx.fillText(
+    'FPS:' + fpsDisplay + '  F:' + frameCount +
+    '  ' + winW + 'x' + winH +
+    '  [' + renderMode + '] ' + gpuShort,
+    8, 6);
+}
+
+// ============================================================
+// Render frame
+// ============================================================
+function render() {
+  frameCount++;
+  fpsSampleFrames++;
+  var now = Date.now();
+  var elapsed = now - fpsSampleTime;
+  if (elapsed >= 500) {
+    fpsDisplay = Math.round(fpsSampleFrames * 1000 / elapsed);
+    fpsSampleFrames = 0;
+    fpsSampleTime = now;
+  }
+
+  // Canvas is always BASE_W x BASE_H — no scaling needed for layout
+  ctx.clearRect(0, 0, W, H);
+
+  // ── Background ────────────────────────────────────────────
+  if (imageReady) {
+    ctx.drawImage(titleImage, 0, 0, W, H);
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+  } else {
+    ctx.fillStyle = '#0d0d2b';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ── Loading ───────────────────────────────────────────────
+  if (assetsLoaded < assetsTotal) {
+    drawText('Loading... (' + assetsLoaded + '/' + assetsTotal + ')',
+             W / 2, H / 2, 28, WHITE);
+    renderHUD();
+    return;
+  }
+
+  // ── Title ─────────────────────────────────────────────────
+  var titleY = H * 0.28;
+  drawText('RPG Maker', W / 2, titleY, 64, GOLD);
+  drawText('Lexbor + SDL3 + QuickJS', W / 2, titleY + 56,
+           16, 'rgba(220,200,120,0.8)');
+
+  // ── Menu ──────────────────────────────────────────────────
+  var menuGap    = 52;
+  var menuStartY = H * 0.53;
+  var menuHalf   = 130;
+  var menuItemH  = 36;
+
+  menuRects = [];
+  for (var i = 0; i < menuItems.length; i++) {
+    var itemY    = menuStartY + i * menuGap;
+    var selected = (i === menuIndex);
+    menuRects.push({ x0: W/2 - menuHalf, y0: itemY - menuItemH/2,
+                     x1: W/2 + menuHalf, y1: itemY + menuItemH/2 });
+    if (selected) {
+      ctx.fillStyle = 'rgba(248,216,96,0.15)';
+      ctx.fillRect(W/2 - menuHalf, itemY - menuItemH/2, menuHalf*2, menuItemH);
+      drawText('\u25B6 ' + menuItems[i] + ' \u25C0', W/2, itemY, 26, GOLD);
+    } else {
+      drawText(menuItems[i], W/2, itemY, 22, 'rgba(255,255,255,0.7)');
+    }
+  }
+
+  // ── Blink prompt ──────────────────────────────────────────
+  blinkTimer++;
+  if (blinkTimer >= 30) { blinkOn = !blinkOn; blinkTimer = 0; }
+  if (blinkOn) {
+    drawText('Press Enter or click to select',
+             W / 2, H * 0.88, 16, 'rgba(255,255,255,0.55)');
+  }
+
+  renderHUD();
+}
+
+// ============================================================
+// Animation loop
+// ============================================================
+function loop() {
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+// Audio helpers
+// ============================================================
+function playSE(buf) {
+  if (!buf || !audioCtx) return;
+  var src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  var g = audioCtx.createGain();
+  g.gain.value = 0.9;
+  src.connect(g);
+  g.connect(audioCtx.destination);
+  src.start(0);
+}
+
+function toggleMute() {
+  if (!musicGain) { startMusic(); return; }
+  bgmMuted = !bgmMuted;
+  musicGain.gain.value = bgmMuted ? 0.0 : 0.8;
+  diag('BGM ' + (bgmMuted ? 'MUTED' : 'UNMUTED'));
+}
+
+function selectItem() {
+  playSE(seDecisionBuf);
+  diag('SELECTED: ' + menuItems[menuIndex]);
+  if (!musicStarted) startMusic();
+}
+
+function menuMove(delta) {
+  var next = (menuIndex + delta + menuItems.length) % menuItems.length;
+  if (next !== menuIndex) { menuIndex = next; playSE(seCursorBuf); }
+}
+
+// ============================================================
+// Keyboard events
+// ============================================================
+document.addEventListener('keydown', function(e) {
+  diag('KEY key=' + e.key + ' code=' + e.code + ' keyCode=' + e.keyCode);
+  switch (e.keyCode) {
+    case 38: menuMove(-1); break;           // Up
+    case 40: menuMove(+1); break;           // Down
+    case 13: case 32: selectItem(); break;  // Enter / Space
+    case 27: toggleMute(); break;           // ESC — mute/unmute
+    case 77: if (musicStarted) stopMusic(); else startMusic(); break; // M
+  }
+});
+
+// ============================================================
+// Mouse events
+// ============================================================
+document.addEventListener('mousemove', function(e) {
+  // Map window pixel coords → canvas (BASE) coords
+  var mx = e.clientX * W / winW, my = e.clientY * H / winH;
+  for (var i = 0; i < menuRects.length; i++) {
+    var r = menuRects[i];
+    if (mx >= r.x0 && mx <= r.x1 && my >= r.y0 && my <= r.y1) {
+      if (menuIndex !== i) { menuIndex = i; playSE(seCursorBuf); }
+      break;
+    }
+  }
+});
+
+document.addEventListener('mousedown', function(e) {
+  diag('MOUSEDOWN btn=' + e.button + ' x=' + e.clientX + ' y=' + e.clientY);
+  if (e.button === 0) selectItem();  // left  = Enter
+  if (e.button === 2) toggleMute();  // right = ESC / mute
+});
+
+// ============================================================
+// Music
+// ============================================================
+function startMusic() {
+  if (!musicBuffer || musicStarted) return;
+  musicSource = audioCtx.createBufferSource();
+  musicSource.buffer = musicBuffer;
+  musicSource.loop = true;
+  musicGain = audioCtx.createGain();
+  musicGain.gain.value = bgmMuted ? 0.0 : 0.8;
+  musicSource.connect(musicGain);
+  musicGain.connect(audioCtx.destination);
+  musicSource.start(0);
+  musicStarted = true;
+  diag('BGM started');
+}
+
+function stopMusic() {
+  if (musicSource) { musicSource.stop(); musicSource = null; }
+  musicStarted = false;
+  diag('BGM stopped');
+}
+
+// ============================================================
+// Asset loading
+// ============================================================
+
+// ── 1. Image ─────────────────────────────────────────────
+titleImage = new Image();
+titleImage.onload = function() {
+  diag('IMAGE OK: ' + titleImage.width + 'x' + titleImage.height +
+       ' complete=' + titleImage.complete +
+       ' naturalWidth=' + titleImage.naturalWidth);
+  imageReady = true;
+  assetsLoaded++;
+};
+titleImage.onerror = function() {
+  diag('IMAGE FAIL: img/Test.png');
+  assetsLoaded++;
+};
+titleImage.src = 'img/Test.png';
+
+// ── 2. Audio ─────────────────────────────────────────────
+audioCtx = new AudioContext();
+diag('AudioContext sampleRate=' + audioCtx.sampleRate);
+
+function loadAudio(urls, idx) {
+  if (idx >= urls.length) { diag('AUDIO FAIL: all formats'); assetsLoaded++; return; }
+  var url = urls[idx];
+  var xhr = new XMLHttpRequest();
+  xhr.responseType = 'arraybuffer';
+  xhr.open('GET', url);
+  xhr.onload = function() {
+    if (xhr.status !== 200) { loadAudio(urls, idx + 1); return; }
+    diag('AUDIO decoding: ' + url + ' (' + xhr.response.byteLength + ' bytes)');
+    audioCtx.decodeAudioData(xhr.response, function(buffer) {
+      musicBuffer = buffer;
+      diag('AUDIO OK: ' + buffer.numberOfChannels + 'ch ' +
+           buffer.sampleRate + 'Hz ' + buffer.duration.toFixed(2) + 's');
+      assetsLoaded++;
+      if (assetsLoaded >= assetsTotal) startMusic();
+    }, function(err) {
+      diag('AUDIO decode error: ' + err);
+      loadAudio(urls, idx + 1);
+    });
+  };
+  xhr.onerror = function() { diag('AUDIO XHR error: ' + url); loadAudio(urls, idx + 1); };
+  xhr.send();
+}
+loadAudio(['audio/Test.ogg', 'audio/Test.m4a'], 0);
+
+// ── 3. SE: Cursor ────────────────────────────────────────
+function loadSE(url, callback) {
+  var xhr = new XMLHttpRequest();
+  xhr.responseType = 'arraybuffer';
+  xhr.open('GET', url);
+  xhr.onload = function() {
+    if (xhr.status !== 200) { diag('SE FAIL HTTP: ' + url); assetsLoaded++; return; }
+    audioCtx.decodeAudioData(xhr.response, function(buf) {
+      diag('SE OK: ' + url + ' ' + buf.duration.toFixed(2) + 's');
+      callback(buf);
+      assetsLoaded++;
+    }, function(err) { diag('SE decode err: ' + url); assetsLoaded++; });
+  };
+  xhr.onerror = function() { diag('SE XHR err: ' + url); assetsLoaded++; };
+  xhr.send();
+}
+loadSE('audio/Cursor.ogg', function(b) { seCursorBuf = b; });
+loadSE('audio/Decision.ogg', function(b) { seDecisionBuf = b; });
+
+// ── Start render loop ────────────────────────────────────
+diag('Starting rAF loop');
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

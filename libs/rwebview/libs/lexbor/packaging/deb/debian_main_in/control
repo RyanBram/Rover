@@ -1,0 +1,33 @@
+Source: liblexbor
+Section: libs
+Priority: optional
+Maintainer: Alexander Borisov <borisov@lexbor.com>
+Standards-Version: 4.6.2
+Vcs-Git: https://github.com/lexbor/lexbor.git
+Vcs-Browser: https://github.com/lexbor/lexbor
+Homepage: https://lexbor.com
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.0)
+
+Package: liblexbor%%SOVERSION%%
+Section: libs
+Architecture: any
+Multi-Arch: same
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Lexbor is development of an open source HTML Renderer library.
+ All modules included in this library.
+ .
+ Modules:
+ %%MODULES_NAMES%%
+
+Package: liblexbor-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends: ${misc:Depends}, liblexbor%%SOVERSION%% (= %%VERSION_DISTRO%%)
+Description: Static library and headers for the liblexbor.
+ All modules included in this library.
+ .
+ Modules:
+ %%MODULES_NAMES%%

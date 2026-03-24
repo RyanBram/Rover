@@ -1053,6 +1053,10 @@
           },
 
           rmdirSync: function (dirPath) {
+            if (_isVirtualHostMode) {
+              _nativeCall("fs_rmdir", [dirPath]);
+              return;
+            }
             _syncPost("/__fs_rmdir__", { path: dirPath });
             _statCacheInvalidate(dirPath);
           },
@@ -1291,6 +1295,15 @@
             }
           },
 
+          rmdir: function (path, callback) {
+            try {
+              this.rmdirSync(path);
+              if (callback) callback(null);
+            } catch (err) {
+              if (callback) callback(err);
+            }
+          },
+
           exists: function (path, callback) {
             var result = this.existsSync(path);
             if (callback) callback(result);
@@ -1523,6 +1536,19 @@
               return new Promise(function (resolve, reject) {
                 try {
                   _syncPost("/__fs_unlink__", { path: path });
+                  resolve();
+                } catch (e) {
+                  reject(e);
+                }
+              });
+            },
+            rmdir: function (path) {
+              if (_isVirtualHostMode) {
+                return _nativeCall("fs_rmdir", [path]);
+              }
+              return new Promise(function (resolve, reject) {
+                try {
+                  _syncPost("/__fs_rmdir__", { path: path });
                   resolve();
                 } catch (e) {
                   reject(e);

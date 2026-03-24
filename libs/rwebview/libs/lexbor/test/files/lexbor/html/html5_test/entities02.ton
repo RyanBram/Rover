@@ -1,0 +1,416 @@
+[
+    /* Test count: 26 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gt;YY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ>YY">
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 15, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&">
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <div bar='ZZ&'></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 15, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&">
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <div bar=ZZ&></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 13, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&">
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gt=YY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&gt=YY">
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gt0YY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&gt0YY">
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gt9YY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&gt9YY">
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gtaYY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&gtaYY">
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gtZYY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&gtZYY">
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gt YY"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 15, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 20, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 16, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ> YY">
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&gt"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 15, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 17, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 16, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ>">
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <div bar='ZZ&gt'></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 15, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 17, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 16, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ>">
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <div bar=ZZ&gt></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 14, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 15, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 15, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ>">
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&pound_id=23"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 18, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 26, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 19, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ£_id=23">
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&prod_id=23"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 25, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&prod_id=23">
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&pound;_id=23"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 27, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ£_id=23">
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&prod;_id=23"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 26, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ∏_id=23">
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&pound=23"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 23, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&pound=23">
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <div bar="ZZ&prod=23"></div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 22, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div bar="ZZ&prod=23">
+        $DATA
+    },
+    /* Test number: 20 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&pound_id=23</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 13, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 14, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZ£_id=23"
+        $DATA
+    },
+    /* Test number: 21 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&prod_id=23</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZ&prod_id=23"
+        $DATA
+    },
+    /* Test number: 22 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&pound;_id=23</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZ£_id=23"
+        $DATA
+    },
+    /* Test number: 23 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&prod;_id=23</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZ∏_id=23"
+        $DATA
+    },
+    /* Test number: 24 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&pound=23</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 13, "id": "named-entity-without-semicolon"},
+            {"line": 1, "col": 14, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZ£=23"
+        $DATA
+    },
+    /* Test number: 25 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&prod=23</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZ&prod=23"
+        $DATA
+    },
+    /* Test number: 26 */
+    {
+        "data": $DATA{ ,12}
+            <div>ZZ&AElig=</div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 5, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 14, "id": "missing-semicolon-after-character-reference"},
+            {"line": 1, "col": 14, "id": "missing-semicolon-after-character-reference"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <div>
+                  "ZZÆ="
+        $DATA
+    },
+]

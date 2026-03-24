@@ -1,0 +1,407 @@
+[
+    /* Test count: 24 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <head></head><style></style>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 20, "id": "unexpected-start-tag-out-of-my-head"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <style>
+              <body>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <head></head><script></script>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 21, "id": "unexpected-start-tag-out-of-my-head"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <script>
+              <body>
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <head></head><!-- --><style></style><!-- --><script></script>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 28, "id": "unexpected-start-tag-out-of-my-head"},
+            {"line": 1, "col": 52, "id": "unexpected-start-tag-out-of-my-head"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <style>
+                <script>
+              <!--   -->
+              <!--   -->
+              <body>
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <head></head><!-- -->x<style></style><!-- --><script></script>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <!--   -->
+              <body>
+                "x"
+                <style>
+                <!--   -->
+                <script>
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>
+            </pre></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>
+            foo</pre></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "foo"
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>
+            
+            foo</pre></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "
+            foo"
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>
+            foo
+            </pre></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "foo
+            "
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>x</pre><span>
+            </span></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "x"
+                <span>
+                  "
+            "
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>x
+            y</pre></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "x
+            y"
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><pre>x<div>
+            y</pre></body></html>
+        $DATA,
+        "errors": [
+            {"line": 2, "col": 7, "id": "end-tag-too-early"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "x"
+                  <div>
+                    "
+            y"
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><pre>&#x0a;&#x0a;A</pre>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <pre>
+                  "
+            A"
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><HTML><META><HEAD></HEAD></HTML>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 33, "id": "two-heads-are-not-better-than-one"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <meta>
+              <body>
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><HTML><HEAD><head></HEAD></HTML>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 33, "id": "two-heads-are-not-better-than-one"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <textarea>foo<span>bar</span><i>baz
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 10, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <textarea>
+                  "foo<span>bar</span><i>baz"
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <title>foo<span>bar</em><i>baz
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 7, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 30, "id": "expected-named-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <title>
+                  "foo<span>bar</em><i>baz"
+              <body>
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><textarea>
+            </textarea>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <textarea>
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><textarea>
+            foo</textarea>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <textarea>
+                  "foo"
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><textarea>
+            
+            foo</textarea>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <textarea>
+                  "
+            foo"
+        $DATA
+    },
+    /* Test number: 20 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html><head></head><body><ul><li><div><p><li></ul></body></html>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 60, "id": "end-tag-too-early"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <ul>
+                  <li>
+                    <div>
+                      <p>
+                  <li>
+        $DATA
+    },
+    /* Test number: 21 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><nobr><nobr><nobr>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 27, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 33, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 33, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <nobr>
+                <nobr>
+                <nobr>
+        $DATA
+    },
+    /* Test number: 22 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><nobr><nobr></nobr><nobr>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 27, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 40, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <nobr>
+                <nobr>
+                <nobr>
+        $DATA
+    },
+    /* Test number: 23 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><html><body><p><table></table></body></html>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                <table>
+        $DATA
+    },
+    /* Test number: 24 */
+    {
+        "data": $DATA{ ,12}
+            <p><table></table>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 3, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <p>
+                  <table>
+        $DATA
+    },
+]

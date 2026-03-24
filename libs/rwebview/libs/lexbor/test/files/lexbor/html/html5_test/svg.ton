@@ -1,0 +1,140 @@
+[
+    /* Test count: 8 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <svg><tr><td><title><tr>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 21, "id": "Unexpected <tr> tag"},
+            {"line": 1, "col": 25, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "td", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:tr>
+                <svg:td>
+                  <svg:title>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <svg><tr><td><title><tr>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 21, "id": "Unexpected <tr> tag"},
+            {"line": 1, "col": 25, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "tr", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:tr>
+                <svg:td>
+                  <svg:title>
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <svg><thead><title><tbody>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 20, "id": "Unexpected <tbody> tag"},
+            {"line": 1, "col": 27, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "thead", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:thead>
+                <svg:title>
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <svg><tfoot><title><tbody>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 20, "id": "Unexpected <tbody> tag"},
+            {"line": 1, "col": 27, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "tfoot", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:tfoot>
+                <svg:title>
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <svg><tbody><title><tfoot>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 20, "id": "Unexpected <tfoot> tag"},
+            {"line": 1, "col": 27, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "tbody", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:tbody>
+                <svg:title>
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <svg><tbody><title></table>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 20, "id": "Unexpected </table> tag"},
+            {"line": 1, "col": 28, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "tbody", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:tbody>
+                <svg:title>
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <svg><thead><title></table>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 20, "id": "Unexpected </table> tag"},
+            {"line": 1, "col": 28, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "tbody", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:thead>
+                <svg:title>
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <svg><tfoot><title></table>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Unexpected <svg> tag"},
+            {"line": 1, "col": 20, "id": "Unexpected </table> tag"},
+            {"line": 1, "col": 28, "id": "Unexpected EOF"}
+        ],
+        "fragment": {"tag": "tbody", "ns": "html"},
+        "result": $DATA{ ,12}
+            <svg:svg>
+              <svg:tfoot>
+                <svg:title>
+        $DATA
+    },
+]

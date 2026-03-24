@@ -1,0 +1,585 @@
+[
+    /* Test count: 27 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><math></math>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><math></math>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><math><mi>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,25) expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><math><annotation-xml><svg><u>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,45) unexpected-html-element-in-foreign-content"},
+            {"line": 0, "col": 0, "id": "(1,45) expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                    <svg:svg>
+                <u>
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><select><math></math></select>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <select>
+                  <math:math>
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><select><option><math></math></option></select>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <select>
+                  <option>
+                    <math:math>
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><math></math></table>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,34) unexpected-start-tag-implies-table-voodoo"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                <table>
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><math><mi>foo</mi></math></table>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,34) foster-parenting-start-token"},
+            {"line": 0, "col": 0, "id": "(1,39) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,40) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,41) foster-parenting-character"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                <table>
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><math><mi>foo</mi><mi>bar</mi></math></table>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,34) foster-parenting-start-tag"},
+            {"line": 0, "col": 0, "id": "(1,39) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,40) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,41) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,51) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,52) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,53) foster-parenting-character"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                  <math:mi>
+                    "bar"
+                <table>
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><tbody><math><mi>foo</mi><mi>bar</mi></math></tbody></table>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,41) foster-parenting-start-tag"},
+            {"line": 0, "col": 0, "id": "(1,46) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,47) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,48) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,58) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,59) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,60) foster-parenting-character"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                  <math:mi>
+                    "bar"
+                <table>
+                  <tbody>
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><tbody><tr><math><mi>foo</mi><mi>bar</mi></math></tr></tbody></table>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,45) foster-parenting-start-tag"},
+            {"line": 0, "col": 0, "id": "(1,50) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,51) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,52) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,62) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,63) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,64) foster-parenting-character"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                  <math:mi>
+                    "bar"
+                <table>
+                  <tbody>
+                    <tr>
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><tbody><tr><td><math><mi>foo</mi><mi>bar</mi></math></td></tr></tbody></table>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <math:math>
+                          <math:mi>
+                            "foo"
+                          <math:mi>
+                            "bar"
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><tbody><tr><td><math><mi>foo</mi><mi>bar</mi></math><p>baz</td></tr></tbody></table>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <math:math>
+                          <math:mi>
+                            "foo"
+                          <math:mi>
+                            "bar"
+                        <p>
+                          "baz"
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><caption><math><mi>foo</mi><mi>bar</mi></math><p>baz</caption></table>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <caption>
+                    <math:math>
+                      <math:mi>
+                        "foo"
+                      <math:mi>
+                        "bar"
+                    <p>
+                      "baz"
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><caption><math><mi>foo</mi><mi>bar</mi><p>baz</table><p>quux
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,70) unexpected-html-element-in-foreign-content"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <caption>
+                    <math:math>
+                      <math:mi>
+                        "foo"
+                      <math:mi>
+                        "bar"
+                    <p>
+                      "baz"
+                <p>
+                  "quux"
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><caption><math><mi>foo</mi><mi>bar</mi>baz</table><p>quux
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,78) unexpected-end-tag"},
+            {"line": 0, "col": 0, "id": "(1,78) expected-one-end-tag-but-got-another"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <caption>
+                    <math:math>
+                      <math:mi>
+                        "foo"
+                      <math:mi>
+                        "bar"
+                      "baz"
+                <p>
+                  "quux"
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><colgroup><math><mi>foo</mi><mi>bar</mi><p>baz</table><p>quux
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,44) foster-parenting-start-tag"},
+            {"line": 0, "col": 0, "id": "(1,49) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,50) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,51) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,61) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,62) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,63) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,71) unexpected-html-element-in-foreign-content"},
+            {"line": 0, "col": 0, "id": "(1,71) foster-parenting-start-tag"},
+            {"line": 0, "col": 0, "id": "(1,63) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,63) foster-parenting-character"},
+            {"line": 0, "col": 0, "id": "(1,63) foster-parenting-character"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                  <math:mi>
+                    "bar"
+                <p>
+                  "baz"
+                <table>
+                  <colgroup>
+                <p>
+                  "quux"
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><tr><td><select><math><mi>foo</mi><mi>bar</mi><p>baz</table><p>quux
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "1:75: ERROR: Start tag 'p' isn't allowed here. Currently open tags: html, body, table, tbody, tr, td, select, math."},
+            {"line": 0, "col": 0, "id": "1:81: ERROR: End tag 'table' isn't allowed here. Currently open tags: html, body, table, tbody, tr, td, select."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <select>
+                          <math:math>
+                            <math:mi>
+                              "foo"
+                            <math:mi>
+                              "bar"
+                          <p>
+                            "baz"
+                <p>
+                  "quux"
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><table><select><math><mi>foo</mi><mi>bar</mi><p>baz</table><p>quux
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "1:29: ERROR: Start tag 'select' isn't allowed here. Currently open tags: html, body, table."},
+            {"line": 0, "col": 0, "id": "1:37: ERROR: Start tag 'math' isn't allowed here. Currently open tags: html, body, table, select."},
+            {"line": 0, "col": 0, "id": "1:47: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:48: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:49: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:59: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:60: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:61: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:67: ERROR: Start tag 'p' isn't allowed here. Currently open tags: html, body, table, select, math."},
+            {"line": 0, "col": 0, "id": "1:67: ERROR: Start tag 'p' isn't allowed here. Currently open tags: html, body, table, select."},
+            {"line": 0, "col": 0, "id": "1:70: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:71: ERROR: Character tokens aren't legal here"},
+            {"line": 0, "col": 0, "id": "1:72: ERROR: Character tokens aren't legal here"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <select>
+                  <math:math>
+                    <math:mi>
+                      "foo"
+                    <math:mi>
+                      "bar"
+                  <p>
+                    "baz"
+                <table>
+                <p>
+                  "quux"
+        $DATA
+    },
+    /* Test number: 20 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body></body></html><math><mi>foo</mi><mi>bar</mi><p>baz
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,41) expected-eof-but-got-start-tag"},
+            {"line": 0, "col": 0, "id": "(1,68) unexpected-html-element-in-foreign-content"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                  <math:mi>
+                    "bar"
+                <p>
+                  "baz"
+        $DATA
+    },
+    /* Test number: 21 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body></body><math><mi>foo</mi><mi>bar</mi><p>baz
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,34) unexpected-start-tag-after-body"},
+            {"line": 0, "col": 0, "id": "(1,61) unexpected-html-element-in-foreign-content"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mi>
+                    "foo"
+                  <math:mi>
+                    "bar"
+                <p>
+                  "baz"
+        $DATA
+    },
+    /* Test number: 22 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><frameset><math><mi></mi><mi></mi><p><span>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,31) unexpected-start-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,35) unexpected-start-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,40) unexpected-end-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,44) unexpected-start-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,49) unexpected-end-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,52) unexpected-start-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,58) unexpected-start-tag-in-frameset"},
+            {"line": 0, "col": 0, "id": "(1,58) eof-in-frameset"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <frameset>
+        $DATA
+    },
+    /* Test number: 23 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><frameset></frameset><math><mi></mi><mi></mi><p><span>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "(1,42) unexpected-start-tag-after-frameset"},
+            {"line": 0, "col": 0, "id": "(1,46) unexpected-start-tag-after-frameset"},
+            {"line": 0, "col": 0, "id": "(1,51) unexpected-end-tag-after-frameset"},
+            {"line": 0, "col": 0, "id": "(1,55) unexpected-start-tag-after-frameset"},
+            {"line": 0, "col": 0, "id": "(1,60) unexpected-end-tag-after-frameset"},
+            {"line": 0, "col": 0, "id": "(1,63) unexpected-start-tag-after-frameset"},
+            {"line": 0, "col": 0, "id": "(1,69) unexpected-start-tag-after-frameset"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <frameset>
+        $DATA
+    },
+    /* Test number: 24 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body xlink:href=foo><math xlink:href=foo></math>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body xlink:href="foo">
+                <math:math xlink:href="foo">
+        $DATA
+    },
+    /* Test number: 25 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body xlink:href=foo xml:lang=en><math><mi xml:lang=en xlink:href=foo></mi></math>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body xlink:href="foo" xml:lang="en">
+                <math:math>
+                  <math:mi xml:lang="en" xlink:href="foo">
+        $DATA
+    },
+    /* Test number: 26 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body xlink:href=foo xml:lang=en><math><mi xml:lang=en xlink:href=foo /></math>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body xlink:href="foo" xml:lang="en">
+                <math:math>
+                  <math:mi xml:lang="en" xlink:href="foo">
+        $DATA
+    },
+    /* Test number: 27 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body xlink:href=foo xml:lang=en><math><mi xml:lang=en xlink:href=foo />bar</math>
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body xlink:href="foo" xml:lang="en">
+                <math:math>
+                  <math:mi xml:lang="en" xlink:href="foo">
+                  "bar"
+        $DATA
+    },
+]
