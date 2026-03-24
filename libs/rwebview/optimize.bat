@@ -1,0 +1,1 @@
+nim c -f --threads:on --opt:size rwebview.nim"

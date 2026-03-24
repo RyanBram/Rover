@@ -1,0 +1,80 @@
+[
+    /* Test count: 2 */
+    /* 1 */
+    {
+        "data": "#id .class {width: 123px; broken declaration; @custom 'https://x.x/' {size: 10px} height: 45pt}",
+        "tokens": [
+            {
+                "type": "qualified-rule",
+                "prelude": [
+                    {"type": "hash", "value": "#id"},
+                    {"type": "whitespace", "value": " "},
+                    {"type": "delim", "value": "."},
+                    {"type": "ident", "value": "class"},
+                    {"type": "whitespace", "value": " "}
+                ],
+                "block": [
+                    {
+                        "type": "declarations",
+                        "declarations": [
+                            {"name": "width", "value": "123px", "important": false}
+                        ]
+                    },
+                    {
+                        "type": "qualified-rule",
+                        "prelude": [
+                            {"type": "ident", "value": "broken"},
+                            {"type": "whitespace", "value": " "},
+                            {"type": "ident", "value": "declaration"}
+                        ],
+                        "block": []
+                    },
+                    {
+                        "type": "at-rule",
+                        "name": "@custom",
+                        "prelude": [
+                            {"type": "string", "value": "\"https://x.x/\""},
+                            {"type": "whitespace", "value": " "}
+                        ],
+                        "block": [
+                            {
+                                "type": "declarations",
+                                "declarations": [
+                                    {"name": "size", "value": "10px", "important": false}
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "declarations",
+                        "declarations": [
+                            {"name": "height", "value": "45pt", "important": false}
+                        ]
+                    }
+                ]
+            }
+        ]
+    },
+    /* 2 */
+    {
+        "data": "@custom 'https://x.x/' {size: 10px}",
+        "tokens": [
+            {
+                "type": "at-rule",
+                "name": "@custom",
+                "prelude": [
+                    {"type": "string", "value": "\"https://x.x/\""},
+                    {"type": "whitespace", "value": " "}
+                ],
+                "block": [
+                    {
+                        "type": "declarations",
+                        "declarations": [
+                            {"name": "size", "value": "10px", "important": false}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]

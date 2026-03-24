@@ -1,0 +1,26 @@
+#!/usr/bin/make
+
+include ../version
+
+ARCH?=$(shell uname -m)
+RELEASE?=1
+VERSION?=$(LEXBOR_VERSION)
+
+default:
+	@echo "available targets: rpm deb"
+
+rpm:
+	@cd rpm && VERSION=$(VERSION) RELEASE=$(RELEASE) ARCH=$(ARCH) $(MAKE) -j all
+
+deb:
+	@cd deb && VERSION=$(VERSION) RELEASE=$(RELEASE) ARCH=$(ARCH) $(MAKE) -j all
+
+clean:
+ifneq (,$(wildcard rpm/Makefile))
+	$(MAKE) -C rpm clean
+endif
+ifneq (,$(wildcard deb/Makefile))
+	$(MAKE) -C deb clean
+endif
+
+.PHONY: default rpm deb clean

@@ -1,0 +1,1158 @@
+[
+    /* Test count: 64 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><button>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 34, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 34, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                  <button>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><address>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <address>
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><article>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 36, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <article>
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><aside>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 34, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <aside>
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><blockquote>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 38, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <blockquote>
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><center>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <center>
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><details>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 36, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <details>
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><dialog>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <dialog>
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><dir>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 32, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <dir>
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 32, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <div>
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><dl>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 31, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <dl>
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><fieldset>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 37, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <fieldset>
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><figcaption>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 39, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <figcaption>
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><figure>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <figure>
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><footer>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <footer>
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><header>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <header>
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><hgroup>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <hgroup>
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><main>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 33, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <main>
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><menu>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 32, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <menu>
+        $DATA
+    },
+    /* Test number: 20 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><nav>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 32, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <nav>
+        $DATA
+    },
+    /* Test number: 21 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><ol>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 31, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <ol>
+        $DATA
+    },
+    /* Test number: 22 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><p>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 29, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <p>
+        $DATA
+    },
+    /* Test number: 23 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><search>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <search>
+        $DATA
+    },
+    /* Test number: 24 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><section>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 36, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <section>
+        $DATA
+    },
+    /* Test number: 25 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><summary>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 36, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <summary>
+        $DATA
+    },
+    /* Test number: 26 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><ul>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <ul>
+        $DATA
+    },
+    /* Test number: 27 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><h1>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <h1>
+        $DATA
+    },
+    /* Test number: 28 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><h6>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <h6>
+        $DATA
+    },
+    /* Test number: 29 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><listing>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <listing>
+        $DATA
+    },
+    /* Test number: 30 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><pre>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 31, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <pre>
+        $DATA
+    },
+    /* Test number: 31 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><form>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 32, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <form>
+        $DATA
+    },
+    /* Test number: 32 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><li>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <li>
+        $DATA
+    },
+    /* Test number: 33 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><dd>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <dd>
+        $DATA
+    },
+    /* Test number: 34 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><dt>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <dt>
+        $DATA
+    },
+    /* Test number: 35 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><plaintext>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 37, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <plaintext>
+        $DATA
+    },
+    /* Test number: 36 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><table>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 33, "id": "eof-in-table"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <table>
+        $DATA
+    },
+    /* Test number: 37 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><hr>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <hr>
+        $DATA
+    },
+    /* Test number: 38 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button><xmp>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 31, "id": "expected-named-closing-tag-but-got-eof"},
+            {"line": 1, "col": 31, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <xmp>
+        $DATA
+    },
+    /* Test number: 39 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><button></p>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <button>
+                    <p>
+        $DATA
+    },
+    /* Test number: 40 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><button><p></button>x
+        $DATA,
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <button>
+                  <p>
+                "x"
+        $DATA
+    },
+    /* Test number: 41 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><address><button></address>a
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 42, "id": "end-tag-too-early"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <address>
+                  <button>
+                "a"
+        $DATA
+    },
+    /* Test number: 42 */
+    {
+        "data": $DATA{ ,12}
+            <p><table></p>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 3, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 14, "id": "unexpected-end-tag-implies-table-voodoo"},
+            {"line": 1, "col": 14, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 14, "id": "eof-in-table"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <p>
+                  <p>
+                  <table>
+        $DATA
+    },
+    /* Test number: 43 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><svg>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 20, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <svg:svg>
+        $DATA
+    },
+    /* Test number: 44 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><figcaption>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                <figcaption>
+        $DATA
+    },
+    /* Test number: 45 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><p><summary>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 27, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                <summary>
+        $DATA
+    },
+    /* Test number: 46 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><form><table><form>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 34, "id": "unexpected-form-in-table"},
+            {"line": 1, "col": 34, "id": "eof-in-table"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <form>
+                  <table>
+        $DATA
+    },
+    /* Test number: 47 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><table><form><form>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 28, "id": "unexpected-form-in-table"},
+            {"line": 1, "col": 34, "id": "unexpected-form-in-table"},
+            {"line": 1, "col": 34, "id": "eof-in-table"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <form>
+        $DATA
+    },
+    /* Test number: 48 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><table><form></table><form>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 28, "id": "unexpected-form-in-table"},
+            {"line": 1, "col": 42, "id": "unexpected-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <form>
+        $DATA
+    },
+    /* Test number: 49 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><svg><foreignObject><p>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 38, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <svg:svg>
+                  <svg:foreignObject>
+                    <p>
+        $DATA
+    },
+    /* Test number: 50 */
+    {
+        "data": $DATA{ ,12}
+            <!doctype html><svg><title>abc
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 30, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <svg:svg>
+                  <svg:title>
+                    "abc"
+        $DATA
+    },
+    /* Test number: 51 */
+    {
+        "data": $DATA{ ,12}
+            <option><span><option>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 8, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 22, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <option>
+                  <span>
+                    <option>
+        $DATA
+    },
+    /* Test number: 52 */
+    {
+        "data": $DATA{ ,12}
+            <option><option>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 8, "id": "expected-doctype-but-got-start-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <option>
+                <option>
+        $DATA
+    },
+    /* Test number: 53 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 27, "id": "unexpected-html-element-in-foreign-content"},
+            {"line": 1, "col": 27, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                <div>
+        $DATA
+    },
+    /* Test number: 54 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml encoding="application/svg+xml"><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 58, "id": "unexpected-html-element-in-foreign-content"},
+            {"line": 1, "col": 58, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml encoding="application/svg+xml">
+                <div>
+        $DATA
+    },
+    /* Test number: 55 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml encoding="application/xhtml+xml"><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 60, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml encoding="application/xhtml+xml">
+                    <div>
+        $DATA
+    },
+    /* Test number: 56 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml encoding="aPPlication/xhtmL+xMl"><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 60, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml encoding="aPPlication/xhtmL+xMl">
+                    <div>
+        $DATA
+    },
+    /* Test number: 57 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml encoding="text/html"><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 48, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml encoding="text/html">
+                    <div>
+        $DATA
+    },
+    /* Test number: 58 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml encoding="Text/htmL"><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 48, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml encoding="Text/htmL">
+                    <div>
+        $DATA
+    },
+    /* Test number: 59 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml encoding=" text/html "><div>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 50, "id": "unexpected-html-element-in-foreign-content"},
+            {"line": 1, "col": 50, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml encoding=" text/html ">
+                <div>
+        $DATA
+    },
+    /* Test number: 60 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml> </annotation-xml>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 40, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                    " "
+        $DATA
+    },
+    /* Test number: 61 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml>c</annotation-xml>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 40, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                    "c"
+        $DATA
+    },
+    /* Test number: 62 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml><!--foo-->
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 32, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                    <!-- foo -->
+        $DATA
+    },
+    /* Test number: 63 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml></svg>x
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 28, "id": "unexpected-end-tag-in-math"},
+            {"line": 1, "col": 28, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 29, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                    "x"
+        $DATA
+    },
+    /* Test number: 64 */
+    {
+        "data": $DATA{ ,12}
+            <math><annotation-xml><svg>x
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 28, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:annotation-xml>
+                    <svg:svg>
+                      "x"
+        $DATA
+    },
+]

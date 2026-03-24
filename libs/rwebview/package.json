@@ -1,0 +1,13 @@
+{
+  "name": "rover-app",
+  "main": "testmedia.html",
+  "httpServer": false,
+  "window": {
+    "title": "Rover App",
+    "icon": "icon/icon.png",
+    "width": 960,
+    "height": 720,
+    "maximize": false,
+    "fullscreen": false
+  }
+}

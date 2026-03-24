@@ -1,0 +1,344 @@
+[
+    /* Test count: 19 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><!doctype html><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 31, "id": "Unexpected DOCTYPE. Ignored."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><html class="foo"><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 34, "id": "html needs to be the first start tag."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html class="foo">
+              <head>
+                <noscript>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-tag"}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+              <body>
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript>   </noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  "   "
+              <body>
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-tag"}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><basefont><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <basefont>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><bgsound><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <bgsound>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><link><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <link>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><meta><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <meta>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><noframes>XXX</noscript></noframes></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <noframes>
+                    "XXX</noscript>"
+              <body>
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><style>XXX</style></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <style>
+                    "XXX"
+              <body>
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript></br><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 21, "id": "Element br not allowed in a inhead-noscript context"},
+            {"line": 1, "col": 21, "id": "Unexpected end tag (br). Treated as br element."},
+            {"line": 1, "col": 42, "id": "Unexpected end tag (noscript). Ignored."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+              <body>
+                <br>
+                <!-- foo -->
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><head class="foo"><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 34, "id": "Unexpected start tag (head)."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><noscript class="foo"><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 34, "id": "Unexpected start tag (noscript)."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript></p><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 20, "id": "Unexpected end tag (p). Ignored."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                  <!-- foo -->
+              <body>
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript><p><!--foo--></noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 19, "id": "Element p not allowed in a inhead-noscript context"},
+            {"line": 1, "col": 40, "id": "Unexpected end tag (noscript). Ignored."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+              <body>
+                <p>
+                  <!-- foo -->
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript>XXX<!--foo--></noscript></head>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "Unexpected start tag (head). Expected DOCTYPE."},
+            {"line": 1, "col": 19, "id": "Unexpected non-space character. Expected inhead-noscript content"},
+            {"line": 1, "col": 30, "id": "Unexpected end tag (noscript). Ignored."},
+            {"line": 1, "col": 37, "id": "Unexpected end tag (head). Ignored."}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+              <body>
+                "XXX"
+                <!-- foo -->
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 6, "id": "expected-doctype-but-got-tag"},
+            {"line": 1, "col": 6, "id": "eof-in-head-noscript"}
+        ],
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+              <body>
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <head><noscript></noscript><link>
+        $DATA,
+        "scripting": false,
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+                <noscript>
+                <link>
+              <body>
+        $DATA
+    },
+]

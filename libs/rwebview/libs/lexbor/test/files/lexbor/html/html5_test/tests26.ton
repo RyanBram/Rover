@@ -1,0 +1,546 @@
+[
+    /* Test count: 20 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><a href='#1'><nobr>1<nobr></a><br><a href='#2'><nobr>2<nobr></a><br><a href='#3'><nobr>3<nobr></a>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 47, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 51, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 74, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 74, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 81, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 85, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 108, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 108, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 115, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 119, "id": "adoption-agency-1.3"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <a href="#1">
+                  <nobr>
+                    "1"
+                  <nobr>
+                <nobr>
+                  <br>
+                  <a href="#2">
+                <a href="#2">
+                  <nobr>
+                    "2"
+                  <nobr>
+                <nobr>
+                  <br>
+                  <a href="#3">
+                <a href="#3">
+                  <nobr>
+                    "3"
+                  <nobr>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<nobr></b><i><nobr>2<nobr></i>3
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 37, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 41, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 50, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 50, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 57, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 61, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 62, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                  <nobr>
+                <nobr>
+                  <i>
+                <i>
+                  <nobr>
+                    "2"
+                  <nobr>
+                <nobr>
+                  "3"
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<table><nobr></b><i><nobr>2<nobr></i>3
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 44, "id": "foster-parenting-start-tag"},
+            {"line": 1, "col": 48, "id": "foster-parenting-end-tag"},
+            {"line": 1, "col": 48, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 51, "id": "foster-parenting-start-tag"},
+            {"line": 1, "col": 57, "id": "foster-parenting-start-tag"},
+            {"line": 1, "col": 57, "id": "nobr-already-in-scope"},
+            {"line": 1, "col": 57, "id": "adoption-agency-1.2"},
+            {"line": 1, "col": 58, "id": "foster-parenting-character"},
+            {"line": 1, "col": 64, "id": "foster-parenting-start-tag"},
+            {"line": 1, "col": 64, "id": "nobr-already-in-scope"},
+            {"line": 1, "col": 68, "id": "foster-parenting-end-tag"},
+            {"line": 1, "col": 68, "id": "adoption-agency-1.2"},
+            {"line": 1, "col": 69, "id": "foster-parenting-character"},
+            {"line": 1, "col": 69, "id": "eof-in-table"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                    <nobr>
+                      <i>
+                    <i>
+                      <nobr>
+                        "2"
+                      <nobr>
+                    <nobr>
+                      "3"
+                    <table>
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<table><tr><td><nobr></b><i><nobr>2<nobr></i>3
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 56, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 65, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 65, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 72, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 76, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 77, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                    <table>
+                      <tbody>
+                        <tr>
+                          <td>
+                            <nobr>
+                              <i>
+                            <i>
+                              <nobr>
+                                "2"
+                              <nobr>
+                            <nobr>
+                              "3"
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<div><nobr></b><i><nobr>2<nobr></i>3
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 42, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 42, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 46, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 46, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 55, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 55, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 62, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 66, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 67, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                <div>
+                  <b>
+                    <nobr>
+                    <nobr>
+                  <nobr>
+                    <i>
+                  <i>
+                    <nobr>
+                      "2"
+                    <nobr>
+                  <nobr>
+                    "3"
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<nobr></b><div><i><nobr>2<nobr></i>3
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 37, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 41, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 55, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 55, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 62, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 66, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 67, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                  <nobr>
+                <div>
+                  <nobr>
+                    <i>
+                  <i>
+                    <nobr>
+                      "2"
+                    <nobr>
+                  <nobr>
+                    "3"
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<nobr><ins></b><i><nobr>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 37, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 46, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 55, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 55, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 55, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                  <nobr>
+                    <ins>
+                <nobr>
+                  <i>
+                <i>
+                  <nobr>
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b><nobr>1<ins><nobr></b><i>2
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 42, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 42, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 46, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 50, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  <nobr>
+                    "1"
+                    <ins>
+                  <nobr>
+                <nobr>
+                  <i>
+                    "2"
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><b>1<nobr></b><i><nobr>2</i>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 35, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 44, "id": "unexpected-start-tag-implies-end-tag"},
+            {"line": 1, "col": 44, "id": "adoption-agency-1.3"},
+            {"line": 1, "col": 49, "id": "adoption-agency-1.3"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <b>
+                  "1"
+                  <nobr>
+                <nobr>
+                  <i>
+                <i>
+                  <nobr>
+                    "2"
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <p><code x</code></p>
+            
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 3, "id": "expected-doctype-but-got-start-tag"},
+            {"line": 1, "col": 11, "id": "invalid-character-in-attribute-name"},
+            {"line": 1, "col": 12, "id": "unexpected-character-after-solidus-in-tag"},
+            {"line": 1, "col": 21, "id": "unexpected-end-tag"},
+            {"line": 2, "col": 0, "id": "expected-closing-tag-but-got-eof"},
+            {"line": 1, "col": 11, "id": "unexpected-character-in-attribute-name"},
+            {"line": 1, "col": 13, "id": "unexpected-solidus-in-tag"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <p>
+                  <code x<="" code="">
+                <code x<="" code="">
+                  "
+            "
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><svg><foreignObject><p><i></p>a
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 45, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 46, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <svg:svg>
+                  <svg:foreignObject>
+                    <p>
+                      <i>
+                    <i>
+                      "a"
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><table><tr><td><svg><foreignObject><p><i></p>a
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 60, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 61, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <svg:svg>
+                          <svg:foreignObject>
+                            <p>
+                              <i>
+                            <i>
+                              "a"
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><math><mtext><p><i></p>a
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 38, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 39, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <math:math>
+                  <math:mtext>
+                    <p>
+                      <i>
+                    <i>
+                      "a"
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><table><tr><td><math><mtext><p><i></p>a
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 53, "id": "unexpected-end-tag"},
+            {"line": 1, "col": 54, "id": "expected-closing-tag-but-got-eof"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <math:math>
+                          <math:mtext>
+                            <p>
+                              <i>
+                            <i>
+                              "a"
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><div><!/div>a
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 28, "id": "expected-dashes-or-doctype"},
+            {"line": 1, "col": 34, "id": "expected-closing-tag-but-got-eof"},
+            {"line": 1, "col": 29, "id": "incorrectly-opened-comment"}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <div>
+                  <!-- /div -->
+                  "a"
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <button><p><button>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "Line 1 Col 8 Unexpected start tag (button). Expected DOCTYPE."},
+            {"line": 0, "col": 0, "id": "Line 1 Col 19 Unexpected start tag (button) implies end tag (button)."},
+            {"line": 0, "col": 0, "id": "Line 1 Col 19 Expected closing tag. Unexpected end of file."}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <button>
+                  <p>
+                <button>
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <svg></p><foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Missing doctype"},
+            {"line": 0, "col": 9, "id": "HTML end tag “p” in a foreign namespace context."},
+            {"line": 1, "col": 6, "id": "Unexpected </p> from in body insertion mode"},
+            {"line": 1, "col": 16, "id": "Unexpected EOF"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <svg:svg>
+                <p>
+                <foo>
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <svg></br><foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Missing doctype"},
+            {"line": 0, "col": 10, "id": "HTML end tag “br” in a foreign namespace context."},
+            {"line": 1, "col": 6, "id": "Unexpected </br> from in body insertion mode"},
+            {"line": 1, "col": 16, "id": "Unexpected EOF"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <svg:svg>
+                <br>
+                <foo>
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <math></p><foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Missing doctype"},
+            {"line": 0, "col": 10, "id": "HTML end tag “p” in a foreign namespace context."},
+            {"line": 1, "col": 7, "id": "Unexpected </p> from in body insertion mode"},
+            {"line": 1, "col": 16, "id": "Unexpected EOF"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                <p>
+                <foo>
+        $DATA
+    },
+    /* Test number: 20 */
+    {
+        "data": $DATA{ ,12}
+            <math></br><foo>
+        $DATA,
+        "errors": [
+            {"line": 1, "col": 1, "id": "Missing doctype"},
+            {"line": 0, "col": 11, "id": "HTML end tag “br” in a foreign namespace context."},
+            {"line": 1, "col": 7, "id": "Unexpected </br> from in body insertion mode"},
+            {"line": 1, "col": 17, "id": "Unexpected EOF"}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <math:math>
+                <br>
+                <foo>
+        $DATA
+    },
+]

@@ -1098,6 +1098,18 @@ proc main() =
       w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
+  w.webviewBind("fs_rmdir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+    let w = cast[Webview](arg)
+    try:
+      let args = parseJson($req)
+      let dirPath = decodeUrl(args[0].getStr())
+      removeDir(dirPath)
+      w.webviewReturn(id, 0, "true")
+    except:
+      let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
+      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+  , wPtr)
+
   w.webviewBind("fs_list_dir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
@@ -1413,7 +1425,7 @@ proc main() =
 
   echo ""
   echo "================================================"
-  echo "  Rover - WebView2 Application Running"
+  echo "  Rover - Application Running"
   echo "  Close the window to exit"
   echo "================================================"
   echo ""
@@ -1468,14 +1480,25 @@ proc main() =
         echo "[DUMP] Flush ACK received — closing cleanly"
         isClosing = false
         DestroyWindow(hwnd)
+        when defined(rwebview): PostQuitMessage(0)  # SDL doesn't call PostQuitMessage
       elif GetTickCount() - closeStartTick >= 5000:
         echo "[DUMP] Flush timeout (5s) — closing anyway"
         isClosing = false
         DestroyWindow(hwnd)
+        when defined(rwebview): PostQuitMessage(0)  # SDL doesn't call PostQuitMessage
 
-    # Sleep to prevent CPU spinning
-    # No poll() needed - HTTP server runs in its own thread with its own event loop
-    Sleep(1)
+    # Drive the rwebview SDL event loop (event processing + rendering).
+    # webview_run_step polls SDL events, renders one frame, and returns 1 when
+    # SDL_EVENT_WINDOW_CLOSE_REQUESTED fires — it also posts WM_CLOSE to this
+    # Win32 message queue so the handler above picks it up next iteration.
+    # For the native WebView2 backend, Sleep(1) is sufficient since WebView2
+    # drives its own rendering and event loop internally.
+    when defined(rwebview):
+      discard w.runStep()
+    else:
+      # Sleep to prevent CPU spinning
+      # No poll() needed - HTTP server runs in its own thread with its own event loop
+      Sleep(1)
 
   w.destroy()
 

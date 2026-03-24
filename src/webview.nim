@@ -1,4 +1,10 @@
+## Source: https://github.com/neroist/webview
 ## Wrapper for `Webview <https://github.com/webview/webview>`_.
+##
+## Compile with ``-d:rwebview`` to use the custom SDL3+QuickJS+Lexbor backend
+## (``libs/rwebview/rwebview.nim``) instead of the OS-native webview backend
+## (``libs/webview/webview.cc``).  All ``importc`` bindings below remain the
+## same regardless of backend -- both export the identical ``webview_*`` C ABI.
 
 import std/json
 import std/os
@@ -9,7 +15,13 @@ const
   webview2Include {.used.} = libs / "webview2"
   isDebug = not (defined(release) or defined(danger))
 
-when defined(useWebviewDll):
+when defined(rwebview):
+  ## rwebview backend: import rwebview.nim which exports all webview_* symbols
+  ## with {.exportc, cdecl.}. Nim compiles it to C → .o and links it in.
+  import ../libs/rwebview/rwebview
+  {.pragma: webview, discardable.}
+
+elif defined(useWebviewDll):
   const webviewDll* {.strdefine.} = 
     when defined(windows):
       "webview.dll"
@@ -245,6 +257,12 @@ proc run*(w: Webview): WebviewError {.cdecl, importc: "webview_run", webview.}
   ## Runs the main loop until it's terminated.
   ##
   ## :w: The webview instance.
+
+proc runStep*(w: Webview): cint {.cdecl, importc: "webview_run_step", webview.}
+  ## Process one SDL event frame + render one frame.
+  ## Returns 0 while running, 1 when a window-close event is received.
+  ## Used by rover.nim's message loop when compiled with ``-d:rwebview``:
+  ## call this instead of ``Sleep(1)`` to drive event handling and rendering.
 
 proc terminate*(w: Webview): WebviewError {.cdecl, importc: "webview_terminate", webview.}
   ## Stops the main loop. It is safe to call this function from another other

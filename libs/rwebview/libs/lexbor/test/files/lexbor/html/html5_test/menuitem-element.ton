@@ -1,0 +1,345 @@
+[
+    /* Test count: 20 */
+    /* Test number: 1 */
+    {
+        "data": $DATA{ ,12}
+            <menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 10, "id": "Start tag seen without seeing a doctype first. Expected “<!DOCTYPE html>”."},
+            {"line": 0, "col": 10, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+                <menuitem>
+        $DATA
+    },
+    /* Test number: 2 */
+    {
+        "data": $DATA{ ,12}
+            </menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 11, "id": "End tag seen without seeing a doctype first. Expected “<!DOCTYPE html>”."},
+            {"line": 0, "col": 11, "id": "Stray end tag “menuitem”."}
+        ],
+        "result": $DATA{ ,12}
+            <html>
+              <head>
+              <body>
+        $DATA
+    },
+    /* Test number: 3 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><menuitem>A
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 32, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  "A"
+        $DATA
+    },
+    /* Test number: 4 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><menuitem>A<menuitem>B
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 43, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  "A"
+                  <menuitem>
+                    "B"
+        $DATA
+    },
+    /* Test number: 5 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><menuitem>A<menu>B</menu>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 46, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  "A"
+                  <menu>
+                    "B"
+        $DATA
+    },
+    /* Test number: 6 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><body><menuitem>A<hr>B
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 37, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  "A"
+                  <hr>
+                  "B"
+        $DATA
+    },
+    /* Test number: 7 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><li><menuitem><li>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 33, "id": "End tag “li” implied, but there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <li>
+                  <menuitem>
+                <li>
+        $DATA
+    },
+    /* Test number: 8 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem><p></menuitem>x
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 39, "id": "Stray end tag “menuitem”."},
+            {"line": 0, "col": 40, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  <p>
+                    "x"
+        $DATA
+    },
+    /* Test number: 9 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><p><b></p><menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 25, "id": "End tag “p” seen, but there were open elements."},
+            {"line": 0, "col": 35, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <p>
+                  <b>
+                <b>
+                  <menuitem>
+        $DATA
+    },
+    /* Test number: 10 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem><asdf></menuitem>x
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 42, "id": "End tag “menuitem” seen, but there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  <asdf>
+                "x"
+        $DATA
+    },
+    /* Test number: 11 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html></menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 26, "id": "Stray end tag “menuitem”."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+        $DATA
+    },
+    /* Test number: 12 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><html></menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 26, "id": "Stray end tag “menuitem”."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+        $DATA
+    },
+    /* Test number: 13 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><head></menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 26, "id": "Stray end tag “menuitem”."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+        $DATA
+    },
+    /* Test number: 14 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><select><menuitem></select>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 0, "id": "1:34: ERROR: End tag 'select' isn't allowed here. Currently open tags: html, body, select, menuitem."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <select>
+                  <menuitem>
+        $DATA
+    },
+    /* Test number: 15 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><option><menuitem>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 33, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <option>
+                  <menuitem>
+        $DATA
+    },
+    /* Test number: 16 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem><option>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 33, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  <option>
+        $DATA
+    },
+    /* Test number: 17 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem></body>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 32, "id": "End tag for  “body” seen, but there were unclosed elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+        $DATA
+    },
+    /* Test number: 18 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem></html>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 32, "id": "End tag for  “html” seen, but there were unclosed elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+        $DATA
+    },
+    /* Test number: 19 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem><p>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 28, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  <p>
+        $DATA
+    },
+    /* Test number: 20 */
+    {
+        "data": $DATA{ ,12}
+            <!DOCTYPE html><menuitem><li>
+        $DATA,
+        "errors": [
+            {"line": 0, "col": 29, "id": "End of file seen and there were open elements."}
+        ],
+        "result": $DATA{ ,12}
+            <!DOCTYPE html>
+            <html>
+              <head>
+              <body>
+                <menuitem>
+                  <li>
+        $DATA
+    },
+]
