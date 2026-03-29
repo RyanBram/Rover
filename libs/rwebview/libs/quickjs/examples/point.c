@@ -21,8 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include "../quickjs.h"
+
 #include <math.h>
+
+#include <quickjs.h>
 
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -43,8 +45,8 @@ static void js_point_finalizer(JSRuntime *rt, JSValue val)
 }
 
 static JSValue js_point_ctor(JSContext *ctx,
-                             JSValueConst new_target,
-                             int argc, JSValueConst *argv)
+                             JSValue new_target,
+                             int argc, JSValue *argv)
 {
     JSPointData *s;
     JSValue obj = JS_UNDEFINED;
@@ -74,7 +76,7 @@ static JSValue js_point_ctor(JSContext *ctx,
     return JS_EXCEPTION;
 }
 
-static JSValue js_point_get_xy(JSContext *ctx, JSValueConst this_val, int magic)
+static JSValue js_point_get_xy(JSContext *ctx, JSValue this_val, int magic)
 {
     JSPointData *s = JS_GetOpaque2(ctx, this_val, js_point_class_id);
     if (!s)
@@ -85,7 +87,7 @@ static JSValue js_point_get_xy(JSContext *ctx, JSValueConst this_val, int magic)
         return JS_NewInt32(ctx, s->y);
 }
 
-static JSValue js_point_set_xy(JSContext *ctx, JSValueConst this_val, JSValue val, int magic)
+static JSValue js_point_set_xy(JSContext *ctx, JSValue this_val, JSValue val, int magic)
 {
     JSPointData *s = JS_GetOpaque2(ctx, this_val, js_point_class_id);
     int v;
@@ -100,8 +102,8 @@ static JSValue js_point_set_xy(JSContext *ctx, JSValueConst this_val, JSValue va
     return JS_UNDEFINED;
 }
 
-static JSValue js_point_norm(JSContext *ctx, JSValueConst this_val,
-                             int argc, JSValueConst *argv)
+static JSValue js_point_norm(JSContext *ctx, JSValue this_val,
+                             int argc, JSValue *argv)
 {
     JSPointData *s = JS_GetOpaque2(ctx, this_val, js_point_class_id);
     if (!s)
@@ -123,10 +125,11 @@ static const JSCFunctionListEntry js_point_proto_funcs[] = {
 static int js_point_init(JSContext *ctx, JSModuleDef *m)
 {
     JSValue point_proto, point_class;
+    JSRuntime *rt = JS_GetRuntime(ctx);
 
     /* create the Point class */
-    JS_NewClassID(&js_point_class_id);
-    JS_NewClass(JS_GetRuntime(ctx), js_point_class_id, &js_point_class);
+    JS_NewClassID(rt, &js_point_class_id);
+    JS_NewClass(rt, js_point_class_id, &js_point_class);
 
     point_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, point_proto, js_point_proto_funcs, countof(js_point_proto_funcs));
@@ -140,7 +143,7 @@ static int js_point_init(JSContext *ctx, JSModuleDef *m)
     return 0;
 }
 
-JSModuleDef *js_init_module(JSContext *ctx, const char *module_name)
+JS_MODULE_EXTERN JSModuleDef *js_init_module(JSContext *ctx, const char *module_name)
 {
     JSModuleDef *m;
     m = JS_NewCModule(ctx, module_name, js_point_init);

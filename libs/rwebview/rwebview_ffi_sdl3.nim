@@ -1,4 +1,4 @@
-﻿# ===========================================================================
+# ===========================================================================
 
 type
   SDL_Window   = object   # opaque -- always ptr SDL_Window
@@ -85,6 +85,16 @@ proc sdlEvWheelX(e: var SDL_Event): float32 {.inline.} =
 proc sdlEvWheelY(e: var SDL_Event): float32 {.inline.} =
   cast[ptr float32](cast[uint](addr e) + 28)[]
 
+# Finger/Touch event accessors (SDL_TouchFingerEvent offsets)
+proc sdlEvFingerX(e: var SDL_Event): float32 {.inline.} =
+  cast[ptr float32](cast[uint](addr e) + 32)[]
+proc sdlEvFingerY(e: var SDL_Event): float32 {.inline.} =
+  cast[ptr float32](cast[uint](addr e) + 36)[]
+proc sdlEvFingerID(e: var SDL_Event): uint64 {.inline.} =
+  cast[ptr uint64](cast[uint](addr e) + 24)[]
+proc sdlEvFingerPressure(e: var SDL_Event): float32 {.inline.} =
+  cast[ptr float32](cast[uint](addr e) + 48)[]
+
 # SDL_GLAttr ordinal values — counted from SDL3's SDL_video.h SDL_GLAttr enum:
 # 0=RED_SIZE, 1=GREEN_SIZE, 2=BLUE_SIZE, 3=ALPHA_SIZE, 4=BUFFER_SIZE,
 # 5=DOUBLEBUFFER, 6=DEPTH_SIZE, 7=STENCIL_SIZE, 8=ACCUM_RED_SIZE,
@@ -126,6 +136,11 @@ const
   SDL_EVENT_MOUSE_BUTTON_DOWN*      = 0x401'u32
   SDL_EVENT_MOUSE_BUTTON_UP*        = 0x402'u32
   SDL_EVENT_MOUSE_WHEEL*            = 0x403'u32
+  # Touch/Finger events
+  SDL_EVENT_FINGER_DOWN*            = 0x700'u32
+  SDL_EVENT_FINGER_UP*              = 0x701'u32
+  SDL_EVENT_FINGER_MOTION*          = 0x702'u32
+  SDL_EVENT_FINGER_CANCELED*        = 0x703'u32
 
 # SDL key modifier bit flags (SDL_Keymod values from SDL_keycode.h)
 const
@@ -140,51 +155,65 @@ const
   SDL_KMOD_ALT*    = SDL_KMOD_LALT   or SDL_KMOD_RALT
 
 # ===========================================================================
-# SDL3 FFI  (runtime DLL)
+# SDL3 FFI
+# With -d:sdlStatic, links SDL3 statically (libSDL3.a).
+# Otherwise links dynamically (SDL3.dll).
 # ===========================================================================
 
+when defined(sdlStatic):
+  const sdlStaticLibPath = rwebviewRoot / "bin" / "staticlib" / "lib" / "libSDL3.a"
+  {.passL: sdlStaticLibPath.}
+  # Static SDL3 on Windows needs system libraries
+  {.passL: "-lgdi32 -luser32 -lshell32 -lole32 -loleaut32 -limm32 -lwinmm -lsetupapi -lversion -ladvapi32 -luuid -lcfgmgr32 -lhid".}
+
 proc SDL_Init(flags: uint32): bool
-    {.importc: "SDL_Init", dynlib: sdl3Dll.}
+    {.importc: "SDL_Init".}
 proc SDL_Quit()
-    {.importc: "SDL_Quit", dynlib: sdl3Dll.}
+    {.importc: "SDL_Quit".}
 proc SDL_CreateWindow(title: cstring; w: cint; h: cint; flags: uint64): ptr SDL_Window
-    {.importc: "SDL_CreateWindow", dynlib: sdl3Dll.}
+    {.importc: "SDL_CreateWindow".}
 proc SDL_DestroyWindow(window: ptr SDL_Window)
-    {.importc: "SDL_DestroyWindow", dynlib: sdl3Dll.}
+    {.importc: "SDL_DestroyWindow".}
 proc SDL_SetWindowTitle(window: ptr SDL_Window; title: cstring): bool
-    {.importc: "SDL_SetWindowTitle", dynlib: sdl3Dll.}
+    {.importc: "SDL_SetWindowTitle".}
 proc SDL_SetWindowSize(window: ptr SDL_Window; w: cint; h: cint): bool
-    {.importc: "SDL_SetWindowSize", dynlib: sdl3Dll.}
+    {.importc: "SDL_SetWindowSize".}
 proc SDL_GL_SetAttribute(attr: cint; value: cint): bool
-    {.importc: "SDL_GL_SetAttribute", dynlib: sdl3Dll.}
+    {.importc: "SDL_GL_SetAttribute".}
 proc SDL_GL_CreateContext(window: ptr SDL_Window): SDL_GLContext
-    {.importc: "SDL_GL_CreateContext", dynlib: sdl3Dll.}
+    {.importc: "SDL_GL_CreateContext".}
 proc SDL_GL_DestroyContext(ctx: SDL_GLContext): bool
-    {.importc: "SDL_GL_DestroyContext", dynlib: sdl3Dll.}
+    {.importc: "SDL_GL_DestroyContext".}
 proc SDL_GL_SwapWindow(window: ptr SDL_Window): bool
-    {.importc: "SDL_GL_SwapWindow", dynlib: sdl3Dll.}
+    {.importc: "SDL_GL_SwapWindow".}
 proc SDL_PollEvent(event: ptr SDL_Event): bool
-    {.importc: "SDL_PollEvent", dynlib: sdl3Dll.}
+    {.importc: "SDL_PollEvent".}
 proc SDL_GetWindowProperties(window: ptr SDL_Window): uint32
-    {.importc: "SDL_GetWindowProperties", dynlib: sdl3Dll.}
+    {.importc: "SDL_GetWindowProperties".}
 proc SDL_GetPointerProperty(props: uint32; name: cstring; default: pointer): pointer
-    {.importc: "SDL_GetPointerProperty", dynlib: sdl3Dll.}
+    {.importc: "SDL_GetPointerProperty".}
 proc SDL_GetError(): cstring
-    {.importc: "SDL_GetError", dynlib: sdl3Dll.}
+    {.importc: "SDL_GetError".}
 proc SDL_GetTicks(): uint64
-    {.importc: "SDL_GetTicks", dynlib: sdl3Dll.}
+    {.importc: "SDL_GetTicks".}
 proc SDL_GetKeyName(key: uint32): cstring
-    {.importc: "SDL_GetKeyName", dynlib: sdl3Dll.}
+    {.importc: "SDL_GetKeyName".}
 proc SDL_GL_GetProcAddress(name: cstring): pointer
-    {.importc: "SDL_GL_GetProcAddress", dynlib: sdl3Dll.}
+    {.importc: "SDL_GL_GetProcAddress".}
 proc SDL_GL_SetSwapInterval(interval: cint): bool
-    {.importc: "SDL_GL_SetSwapInterval", dynlib: sdl3Dll.}
+    {.importc: "SDL_GL_SetSwapInterval".}
 proc SDL_Delay(ms: uint32)
-    {.importc: "SDL_Delay", dynlib: sdl3Dll.}
+    {.importc: "SDL_Delay".}
 proc SDL_DestroySurface(surface: pointer)
-    {.importc: "SDL_DestroySurface", dynlib: sdl3Dll.}
+    {.importc: "SDL_DestroySurface".}
 proc SDL_ConvertSurface(surface: pointer; format: uint32): pointer
-    {.importc: "SDL_ConvertSurface", dynlib: sdl3Dll.}
+    {.importc: "SDL_ConvertSurface".}
+proc SDL_MaximizeWindow(window: ptr SDL_Window): bool
+    {.importc: "SDL_MaximizeWindow".}
+proc SDL_GetWindowSizeInPixels(window: ptr SDL_Window; w: ptr cint; h: ptr cint): bool
+    {.importc: "SDL_GetWindowSizeInPixels".}
+proc SDL_SetHint(name: cstring; value: cstring): bool
+    {.importc: "SDL_SetHint".}
 
 # Windows timer resolution — set to 1 ms for accurate Sleep/SDL_Delay timing.
 when defined(windows):

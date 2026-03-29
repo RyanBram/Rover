@@ -1,6 +1,5 @@
 /* Worker code for test_worker.js */
-import * as std from "std";
-import * as os from "os";
+import * as os from "qjs:os";
 
 var parent = os.Worker.parent;
 
@@ -10,7 +9,6 @@ function handle_msg(e) {
     switch(ev.type) {
     case "abort":
         parent.postMessage({ type: "done" });
-        parent.onmessage = null; /* terminate the worker */
         break;
     case "sab":
         /* modify the SharedArrayBuffer */

@@ -1,20 +1,44 @@
-import * as bjson from "./bjson.so";
+import * as std from "qjs:std";
+import * as bjson from "qjs:bjson";
+import { assert } from "./assert.js";
 
-function assert(actual, expected, message) {
-    if (arguments.length == 1)
-        expected = true;
-
-    if (actual === expected)
-        return;
-
-    if (actual !== null && expected !== null
-    &&  typeof actual == 'object' && typeof expected == 'object'
-    &&  actual.toString() === expected.toString())
-        return;
-
-    throw Error("assertion failed: got |" + actual + "|" +
-                ", expected |" + expected + "|" +
-                (message ? " (" + message + ")" : ""));
+function base64decode(s) {
+    var A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var n = s.indexOf("=");
+    if (n < 0) n = s.length;
+    if (n & 3 === 1) throw Error("bad base64"); // too much padding
+    var r = new Uint8Array(3 * (n>>2) + (n>>1 & 1) + (n & 1));
+    var a, b, c, d, i, j;
+    a = b = c = d = i = j = 0;
+    while (i+3 < n) {
+        a = A.indexOf(s[i++]);
+        b = A.indexOf(s[i++]);
+        c = A.indexOf(s[i++]);
+        d = A.indexOf(s[i++]);
+        if (~63 & (a|b|c|d)) throw Error("bad base64");
+        r[j++] = a<<2 | b>>4;
+        r[j++] = 255 & b<<4 | c>>2;
+        r[j++] = 255 & c<<6 | d;
+    }
+    switch (n & 3) {
+    case 2:
+        a = A.indexOf(s[i++]);
+        b = A.indexOf(s[i++]);
+        if (~63 & (a|b)) throw Error("bad base64");
+        if (b & 15) throw Error("bad base64");
+        r[j++] = a<<2 | b>>4;
+        break;
+    case 3:
+        a = A.indexOf(s[i++]);
+        b = A.indexOf(s[i++]);
+        c = A.indexOf(s[i++]);
+        if (~63 & (a|b|c)) throw Error("bad base64");
+        if (c & 3) throw Error("bad base64");
+        r[j++] = a<<2 | b>>4;
+        r[j++] = 255 & b<<4 | c>>2;
+        break;
+    }
+    return r.buffer;
 }
 
 function toHex(a)
@@ -165,9 +189,9 @@ function bjson_test_reference()
         array[i].idx = i;
         array[i].typed_array = new Uint8Array(array_buffer, i, 1);
     }
-    buf = bjson.write(array, true);
+    buf = bjson.write(array, bjson.WRITE_OBJ_REFERENCE);
 
-    array = bjson.read(buf, 0, buf.byteLength, true);
+    array = bjson.read(buf, 0, buf.byteLength, bjson.READ_OBJ_REFERENCE);
 
     /* check the result */
     for(i = 0; i < n; i++) {
@@ -179,28 +203,139 @@ function bjson_test_reference()
     }
 }
 
+function bjson_test_regexp()
+{
+    var buf, r;
+
+    bjson_test(/xyzzy/);
+    bjson_test(/xyzzy/digu);
+
+    buf = bjson.write(/(?<𝓓𝓸𝓰>dog)/);
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert("sup dog".match(r).groups["𝓓𝓸𝓰"], "dog");
+}
+
+function bjson_test_map()
+{
+    var buf, r, xs;
+
+    xs = [["key", "value"]];
+    buf = bjson.write(new Map(xs));
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert(r instanceof Map);
+    assert([...r].toString(), xs.toString());
+}
+
+function bjson_test_set()
+{
+    var buf, r, xs;
+
+    xs = ["one", "two", "three"];
+    buf = bjson.write(new Set(xs));
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert(r instanceof Set);
+    assert([...r].toString(), xs.toString());
+}
+
+function bjson_test_symbol()
+{
+    var buf, r, o;
+
+    o = {[Symbol.toStringTag]: "42"};
+    buf = bjson.write(o);
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert(o.toString(), r.toString());
+
+    o = Symbol('foo');
+    buf = bjson.write(o);
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert(o.toString(), r.toString());
+    assert(o !== r);
+
+    o = Symbol.for('foo');
+    buf = bjson.write(o);
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert(o, r);
+
+    o = Symbol.toStringTag;
+    buf = bjson.write(o);
+    r = bjson.read(buf, 0, buf.byteLength);
+    assert(o, r);
+}
+
+function bjson_test_bytecode()
+{
+    var buf, o, r, e, i;
+
+    o = std.evalScript(";(function f(o){ return o.i })", {compile_only: true});
+    buf = bjson.write(o, bjson.WRITE_OBJ_BYTECODE);
+    try {
+        bjson.read(buf, 0, buf.byteLength);
+    } catch (_e) {
+        e = _e;
+    }
+    assert(String(e), "SyntaxError: no bytecode allowed");
+
+    o = bjson.read(buf, 0, buf.byteLength, bjson.READ_OBJ_BYTECODE);
+    assert(String(o), "[function bytecode]");
+    o = std.evalScript(o, {eval_function: true});
+    for (i = 0; i < 42; i++) o({i}); // exercise o.i IC
+}
+
+function bjson_test_fuzz()
+{
+    var corpus = [
+        ["GP////8QAAAAAARg"],
+        ["GP/////m5uaCLQ=="],
+        ["GP////8AEQATBgYGBgYGBgYGBgb/////EAARAC8R/78vEf+/"],
+        ["GP////8ACH8ACv////9//////////////////////////////9//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgAAAAAAAAAAAAAA+fn5+fn5+fn5+fn5AAAAAAAGAKs="],
+        ["GP////8ADgAAABQA=", bjson.READ_OBJ_REFERENCE],
+    ];
+    for (var [input, flags] of corpus) {
+        var buf = base64decode(input);
+        try {
+            bjson.read(buf, 0, buf.byteLength, flags);
+        } catch (e) {
+            if (/invalid version/.test(e.message)) throw e; // corpus needs update
+            if (/checksum error/.test(e.message)) throw e;
+        }
+    }
+}
+
+function bjson_test_csum()
+{
+    var buf = bjson.write("fortytwo");
+    var tab = new Uint8Array(buf);
+    for (var i = 5; i < tab.length; i++) {
+        for (var k = 0; k < 256; k++) {
+            var t = tab[i];
+            if (t == k)
+                continue;
+            tab[i] = k;
+            var caught = false;
+            try {
+                bjson.read(buf, 0, buf.byteLength);
+            } catch (e) {
+                caught = /checksum error/.test(e.message);
+            }
+            assert(caught);
+            tab[i] = t;
+        }
+    }
+}
+
 function bjson_test_all()
 {
     var obj;
 
     bjson_test({x:1, y:2, if:3});
-
     bjson_test([1, 2, 3]);
-
-    /* array with holes */
-    bjson_test([1, , 2, , 3]); 
-
-    /* fast array with hole */
-    obj = new Array(5);
-    obj[0] = 1;
-    obj[1] = 2;
-    bjson_test(obj);
-
     bjson_test([1.0, "aa", true, false, undefined, null, NaN, -Infinity, -0.0]);
     if (typeof BigInt !== "undefined") {
         bjson_test([BigInt("1"), -BigInt("0x123456789"),
                BigInt("0x123456789abcdef123456789abcdef")]);
     }
+
     bjson_test([new Date(1234), new String("abc"), new Number(-12.1), new Boolean(true)]);
 
     bjson_test(new Int32Array([123123, 222111, -32222]));
@@ -219,6 +354,13 @@ function bjson_test_all()
 
     bjson_test_arraybuffer();
     bjson_test_reference();
+    bjson_test_regexp();
+    bjson_test_map();
+    bjson_test_set();
+    bjson_test_symbol();
+    bjson_test_bytecode();
+    bjson_test_fuzz();
+    bjson_test_csum();
 }
 
 bjson_test_all();

@@ -1,9 +1,70 @@
+# =============================================================================
+# rover.nim
+# Main application entry point for the Rover framework
+# =============================================================================
+#
+# Author    : Ryan Bramantya
+# Copyright : Copyright (c) 2026 Ryan Bramantya
+# License   : Apache License 2.0
+# Website   : https://github.com/RyanBram/Rover
+#
+# -----------------------------------------------------------------------------
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# -----------------------------------------------------------------------------
+#
+# Description:
+#   Main executable for the Rover desktop application framework.
+#   Reads package.json from the current working directory to configure the
+#   window, selects the rendering engine at runtime, and drives the
+#   Win32 message loop for the application lifetime.
+#
+#   Engine selection (runtime, not compile-time):
+#   - "engine": "native"  (default) — uses Edge WebView2 via webview.cc.
+#   - "engine": "rgss"              — lazy-loads rgss.dll (SDL3 + QuickJS).
+#     If rgss.dll is missing, falls back to WebView2 and shows an error page.
+#
+#   HTTP layer:
+#   - httpServer: false (default) — virtual host mapping via WebView2 API.
+#   - httpServer: true            — embedded asynchttpserver on a free port.
+#     Required for Unity WebGL builds that use compressed assets (.gz/.br).
+#
+# Documentation:
+#   See [Documentation] section at the bottom of this file.
+#
+# -----------------------------------------------------------------------------
+#
+# Depends on:
+#   - src/webview.nim      (webview_* C ABI — Edge WebView2 or rwebview)
+#   - src/rgss_engine.nim  (runtime rgss.dll loader via LoadLibrary)
+#   - src/nw_polyfill.js      (JS preamble injected into every loaded page)
+#
+# Produces:
+#   - rover.exe            (Win32 GUI executable)
+#
+# Build command:
+#   nim c -f --threads:on --opt:size --out:src\rover.exe src\rover.nim
+#
+# =============================================================================
+
 import std/[json, os, strformat, strutils, osproc, asynchttpserver, asyncdispatch, net, uri, base64, times, tables]
 import ./webview
+import ./rgss_engine
 import winim/lean
 import winim/inc/shellapi  # For ExtractIcon
 
-const polyfill = staticRead("polyfill.js")
+const polyfill = staticRead("nw_polyfill.js")
 
 # =============================================================================
 # LOW-LEVEL FILE I/O VIA WINDOWS CRT (for PGlite NODEFS support)
@@ -45,6 +106,7 @@ var savedPlacement: WINDOWPLACEMENT
 var isFullscreen = false
 var restoreToMaximize = false  # When both maximize+fullscreen are set: exit fullscreen → maximize
 var flushAckReceived = false  # Set by /__rover_flush_ack__ binding to signal JS flush complete
+var rgssNotFound = false      # Set if engine=rgss but rgss.dll not found; fallback to native + error page
 
 # Dynamic VirtualHost directory mappings — maps arbitrary local directories
 # to rover.ext.N hostnames so JS can fetch binary files without base64.
@@ -741,6 +803,10 @@ type
     httpServer: bool    # Use HTTP server (for Unity), default false (VirtualHost for RPG Maker)
     maximize: bool      # Launch window maximized
     fullscreen: bool    # Launch window fullscreen
+    forceCanvas: bool   # Set "renderer":"canvas" to disable WebGL and force Canvas2D fallback
+    engine: string      # "native" (webview2) or "rgss" (SDL+QuickJS via rgss.dll)
+
+var useRgss* = false  ## Runtime flag: true when engine=rgss and rgss.dll loaded
 
 proc loadConfig(filename: string): Config =
   ## Load configuration from package.json (NW.js compatible)
@@ -772,12 +838,24 @@ proc loadConfig(filename: string): Config =
   # HTTP Server mode (for Unity WebGL), default false (VirtualHost for RPG Maker)
   result.httpServer = jsonData{"httpServer"}.getBool(false)
 
+  # Force Canvas2D renderer — disables WebGL so engines fall back to their
+  # Canvas2D path.  Accepts either  "renderer": "canvas"  or  "forceCanvas": true.
+  let renderer = jsonData{"renderer"}.getStr("")
+  result.forceCanvas = (renderer.toLowerAscii() == "canvas") or
+                       jsonData{"forceCanvas"}.getBool(false)
+
+  # Engine: "native" (webview2, default) or "rgss" (SDL+QuickJS via rgss.dll)
+  result.engine = jsonData{"engine"}.getStr("native").toLowerAscii()
+
 proc createDefaultPackageJson(filename: string) =
   ## Create a default package.json file with standard fields
   let defaultConfig = %*{
     "name": "rover-app",
     "main": "index.html",
+    "engine": "native",
     "httpServer": false,
+    "renderer": "webgl",
+    "interpreter": "quickjs",
     "window": {
       "title": "Rover App",
       "icon": "icon/icon.png",
@@ -788,6 +866,80 @@ proc createDefaultPackageJson(filename: string) =
     }
   }
   writeFile(filename, defaultConfig.pretty())
+
+# =============================================================================
+# ENGINE DISPATCH WRAPPERS
+# When useRgss=true, calls go to rgss.dll; otherwise to native webview2.
+# =============================================================================
+
+proc engineCreate(width, height: cint; initialState: cint = 0): Webview =
+  if useRgss:
+    cast[Webview](rgss.webviewCreate(1, nil, width, height, initialState))
+  else:
+    create(cint(true), nil, width, height, initialState)
+
+proc engineDestroy(w: Webview) =
+  if useRgss: discard rgss.webviewDestroy(w)
+  else: discard w.destroy()
+
+proc engineRunStep(w: Webview): cint =
+  if useRgss: rgss.webviewRunStep(w)
+  else: 0  # native mode uses Sleep(1), never calls runStep
+
+proc engineNavigate(w: Webview; url: cstring) =
+  if useRgss: discard rgss.webviewNavigate(w, url)
+  else: discard w.navigate(url)
+
+proc engineInit(w: Webview; js: cstring) =
+  if useRgss: discard rgss.webviewInit(w, js)
+  else: discard w.init(js)
+
+proc engineEval(w: Webview; js: cstring) =
+  if useRgss: discard rgss.webviewEval(w, js)
+  else: discard w.eval(js)
+
+proc engineSetTitle(w: Webview; title: cstring) =
+  if useRgss: discard rgss.webviewSetTitle(w, title)
+  else: discard w.setTitle(title)
+
+proc engineSetSize(w: Webview; width, height: cint; hints: cint = 0) =
+  if useRgss: discard rgss.webviewSetSize(w, width, height, hints)
+  else: discard w.setSize(width, height, WebviewHint(hints))
+
+proc engineGetWindow(w: Webview): pointer =
+  if useRgss: rgss.webviewGetWindow(w)
+  else: w.getWindow()
+
+proc engineGetSavedPlacement(w: Webview; placement: pointer) =
+  if useRgss:
+    if rgss.webviewGetSavedPlacement != nil:
+      rgss.webviewGetSavedPlacement(w, placement)
+  else:
+    w.getSavedPlacement(placement)
+
+proc engineBind(w: Webview; name: cstring;
+                fn: proc(id: cstring; req: cstring; arg: pointer) {.cdecl.};
+                arg: pointer) =
+  if useRgss: discard rgss.webviewBind(w, name, fn, arg)
+  else: discard w.webviewBind(name, fn, arg)
+
+proc engineReturn(w: Webview; id: cstring; status: cint; result: cstring) =
+  if useRgss: discard rgss.webviewReturn(w, id, status, result)
+  else: discard w.webviewReturn(id, status, result)
+
+proc engineOpenDevTools(w: Webview) =
+  if useRgss:
+    if rgss.webviewOpenDevTools != nil:
+      rgss.webviewOpenDevTools(w)
+  else:
+    w.openDevTools()
+
+proc engineSetVHMapping(w: Webview; hostName: cstring; folderPath: cstring; accessKind: cint) =
+  if useRgss:
+    if rgss.webviewSetVHMapping != nil:
+      rgss.webviewSetVHMapping(w, hostName, folderPath, accessKind)
+  else:
+    w.setVirtualHostNameToFolderMapping(hostName, folderPath, accessKind)
 
 proc setWindowIconFromExe(hwnd: HWND) =
   ## Extract and set icon from executable's RC resources
@@ -882,6 +1034,27 @@ proc main() =
     echo "[CONFIG] Window State: Maximized"
   elif config.fullscreen:
     echo "[CONFIG] Window State: Fullscreen"
+  if config.forceCanvas:
+    echo "[CONFIG] Render Mode: Canvas (forced)"
+  else:
+    echo "[CONFIG] Render Mode: WebGL"
+
+  # Engine detection — "rgss" loads rgss.dll for SDL+QuickJS rendering
+  echo &"[CONFIG] Engine: {config.engine}"
+  if config.engine == "rgss":
+    let dllPath = getCurrentDir() / "rgss.dll"
+    if not fileExists(dllPath):
+      echo "[WARN] engine=rgss but rgss.dll not found in: " & getCurrentDir()
+      echo "[WARN] Falling back to native webview2 mode and showing error page"
+      rgssNotFound = true
+      useRgss = false
+    elif not loadRgssEngine(dllPath):
+      echo "[WARN] Failed to load rgss.dll, falling back to native mode"
+      rgssNotFound = true
+      useRgss = false
+    else:
+      useRgss = true
+
   echo ""
 
   # Build path to main HTML file
@@ -898,13 +1071,12 @@ proc main() =
   elif config.maximize:
     initialState = 1
 
-  # Create WebView window
-  # Pass config size to ensure it opens at correct size and centered immediately
-  let w = newWebview(width = config.windowWidth, height = config.windowHeight, initialState = initialState)
+  # Create WebView window (native webview2 or rgss.dll depending on engine)
+  let w = engineCreate(cint(config.windowWidth), cint(config.windowHeight), cint(initialState))
   
   # Get HWND and set icon IMMEDIATELY after window creation
   # This minimizes the visible delay where window has no/default icon
-  let hwnd = cast[HWND](w.getWindow())
+  let hwnd = cast[HWND](engineGetWindow(w))
   
   # Set icon first (priority: package.json > exe fallback)
   # HTML/JS can override this after page loads via auto-sync
@@ -917,12 +1089,12 @@ proc main() =
   if config.fullscreen:
     isFullscreen = true
     # Retrieve the normal-state placement saved by webview.h before it applied fullscreen
-    w.getSavedPlacement(savedPlacement.addr)
+    engineGetSavedPlacement(w, savedPlacement.addr)
   if config.fullscreen and config.maximize:
     restoreToMaximize = true
   
   # Now set title and initialize polyfill
-  w.title = config.windowTitle
+  engineSetTitle(w, cstring(config.windowTitle))
 
   # Get current directory as base for serving
   let baseDir = getCurrentDir()
@@ -936,6 +1108,32 @@ proc main() =
     preamble &= "window.__roverInitialMaximize = true;\n"
   if config.fullscreen and config.maximize:
     preamble &= "window.__roverRestoreToMaximize = true;\n"
+  if config.forceCanvas:
+    echo "[CONFIG] renderer=canvas: WebGL disabled, forcing Canvas2D fallback"
+    # Neutralise every WebGL entry-point that game engines probe before
+    # choosing a renderer.  The Canvas2D context ("2d") is left intact.
+    preamble &= """window.__roverForceCanvas = true;
+(function(){
+  // HTMLCanvasElement.prototype only exists in real browsers (webview2 backend).
+  // In rwebview the canvas is a plain object; dom_preamble.js already checks
+  // window.__roverForceCanvas inside the per-instance getContext stub.
+  if (typeof HTMLCanvasElement !== 'undefined') {
+    var _origGCC = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function(type, opts) {
+      if (type === 'webgl' || type === 'webgl2' ||
+          type === 'experimental-webgl' || type === 'experimental-webgl2') {
+        return null;
+      }
+      return _origGCC ? _origGCC.call(this, type, opts) : null;
+    };
+  }
+  // Also kill the global constructors engines sometimes use as capability flags
+  window.WebGLRenderingContext       = undefined;
+  window.WebGL2RenderingContext      = undefined;
+  // Notify rwebview native layer so the F2 overlay shows "Canvas (forced)"
+  if (typeof __rw_setForceCanvas === 'function') __rw_setForceCanvas();
+})();
+"""
 
   # Inject command-line arguments so the app can open files passed via drag-and-drop
   # or file association (e.g. rover.exe "C:\books\manga.cbz").
@@ -947,18 +1145,132 @@ proc main() =
     preamble &= "window.__roverArgv = " & $argvJson & ";\n"
 
   let fullPolyfill = preamble & polyfill
-  w.init(cstring(fullPolyfill))
+  engineInit(w, cstring(fullPolyfill))
 
   # Configure Virtual Host Mapping to bypass CORS (always enabled)
   # This is used by RPG Maker for CORS access and as default navigation
   let hostName = "rover.assets"
   # AccessKind: 1 = Allow (COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW)
-  w.setVirtualHostNameToFolderMapping(cstring(hostName), cstring(baseDir), 1)
+  engineSetVHMapping(w, cstring(hostName), cstring(baseDir), 1)
   echo &"[WEBVIEW] Virtual Host: {hostName} -> {baseDir}"
 
   # Determine navigation URL based on httpServer config
   var url: string
-  if config.httpServer:
+  
+  if rgssNotFound:
+    # RGSS was requested but DLL not found - show error page instead
+    let errorHtml = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>RGSS Engine Error</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0d0d0d;
+      color: #ccc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .container {
+      max-width: 580px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .icon {
+      font-size: 52px;
+      line-height: 1;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: #f5a623;
+      letter-spacing: 0.03em;
+      margin-bottom: 12px;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #2a2a2a;
+      margin: 16px 0;
+    }
+
+    .desc {
+      font-size: 14px;
+      line-height: 1.7;
+      color: #aaa;
+      margin-bottom: 20px;
+    }
+
+    code {
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      color: #7ec8e8;
+      background: #161616;
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+
+    .solution {
+      background: #111;
+      border: 1px solid #222;
+      border-left: 3px solid #f5a623;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      text-align: left;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.8;
+      color: #bbb;
+    }
+
+    .solution strong {
+      color: #f5a623;
+      font-weight: 600;
+    }
+
+
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">⚠️</div>
+    <h1>RGSS Engine Not Found</h1>
+    <hr class="divider">
+    <p class="desc">
+      You configured <code>"engine": "rgss"</code> in your <code>package.json</code>,
+      but the required <code>rgss.dll</code> file was not found in the expected location.
+    </p>
+
+    <div class="solution">
+      <strong>Option 1 —</strong> Place the DLL in the current directory<br>
+      Expected: <code>C:\your\project\dir\rgss.dll</code>
+    </div>
+
+    <div class="solution">
+      <strong>Option 2 —</strong> Switch to native mode in <code>package.json</code><br>
+      Set <code>"engine": "native"</code> or remove the field entirely.
+    </div>
+
+
+  </div>
+</body>
+</html>
+"""
+    # Use base64 encoding for data URL to preserve styling and special characters
+    let encodedHtml = base64.encode(errorHtml)
+    url = "data:text/html;base64," & encodedHtml
+  elif config.httpServer:
     # HTTP Server mode - required for Unity WebGL compressed builds (.gz, .br files)
     let port = findAvailablePort()
     # Start HTTP server in dedicated thread for maximum performance
@@ -971,8 +1283,10 @@ proc main() =
     url = &"http://{hostName}/{config.main}"
     echo &"[MODE] VirtualHost mode (no HTTP server)"
   
+  if rgssNotFound:
+    echo "[ERROR] Displaying error page instead of app: rgss.dll not found"
   echo &"[WEBVIEW] Loading: {url}"
-  w.navigate(cstring(url))
+  engineNavigate(w, cstring(url))
 
   # Implement Native Bindings
   # We pass 'w' (Webview instance) as the argument to all bindings
@@ -980,49 +1294,49 @@ proc main() =
   
   let wPtr = cast[pointer](w)
 
-  w.webviewBind("exit_app", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "exit_app", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     # Send WM_CLOSE to trigger standard window closing mechanism
     PostMessage(hwnd, WM_CLOSE, 0, 0)
-    w.webviewReturn(id, 0, "")
+    engineReturn(w, id, 0, "")
   , wPtr)
 
-  w.webviewBind("center_window", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "center_window", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     var rect: RECT
     GetWindowRect(hwnd, rect.addr)
     let width = rect.right - rect.left
     let height = rect.bottom - rect.top
     centerWindow(hwnd, width, height)
-    w.webviewReturn(id, 0, "")
+    engineReturn(w, id, 0, "")
   , wPtr)
 
-  w.webviewBind("toggle_fullscreen", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "toggle_fullscreen", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     toggleFullscreen(hwnd)
-    w.webviewReturn(id, 0, "")
+    engineReturn(w, id, 0, "")
   , wPtr)
 
-  w.webviewBind("toggle_devtools", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "toggle_devtools", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    w.openDevTools()
-    w.webviewReturn(id, 0, "")
+    engineOpenDevTools(w)
+    engineReturn(w, id, 0, "")
   , wPtr)
 
-  w.webviewBind("get_exe_directory", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "get_exe_directory", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     # Return JSON string of current directory
     let dir = getCurrentDir().replace("\\", "\\\\")
     let jsonResult = &"\"{dir}\""
-    w.webviewReturn(id, 0, cstring(jsonResult))
+    engineReturn(w, id, 0, cstring(jsonResult))
   , wPtr)
 
   # File System Bindings for RPG Maker save functionality
   
-  w.webviewBind("fs_write_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_write_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       # Parse JSON array: [path, content]
@@ -1030,14 +1344,14 @@ proc main() =
       let filePath = decodeUrl(args[0].getStr())
       let content = args[1].getStr()
       writeFile(filePath, content)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
   # Write binary file from base64-encoded string (used for thumbnail caching in VirtualHost mode)
-  w.webviewBind("fs_write_binary", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_write_binary", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1045,72 +1359,72 @@ proc main() =
       let b64Content = args[1].getStr()
       let binaryData = decode(b64Content)
       writeFile(filePath, binaryData)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_read_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_read_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let filePath = decodeUrl(args[0].getStr())
       let content = readFile(filePath).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")
-      w.webviewReturn(id, 0, cstring(&"\"{content}\""))
+      engineReturn(w, id, 0, cstring(&"\"{content}\""))
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_exists", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_exists", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let filePath = decodeUrl(args[0].getStr())
       let exists = fileExists(filePath) or dirExists(filePath)
-      w.webviewReturn(id, 0, cstring(if exists: "true" else: "false"))
+      engineReturn(w, id, 0, cstring(if exists: "true" else: "false"))
     except:
-      w.webviewReturn(id, 0, cstring("false"))
+      engineReturn(w, id, 0, cstring("false"))
   , wPtr)
 
-  w.webviewBind("fs_mkdir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_mkdir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let dirPath = decodeUrl(args[0].getStr())
       createDir(dirPath)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_unlink", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_unlink", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let filePath = decodeUrl(args[0].getStr())
       removeFile(filePath)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_rmdir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_rmdir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let dirPath = decodeUrl(args[0].getStr())
       removeDir(dirPath)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_list_dir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_list_dir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1125,14 +1439,14 @@ proc main() =
       
       # Return as JSON array
       let jsonResult = $(%files)
-      w.webviewReturn(id, 0, cstring(jsonResult))
+      engineReturn(w, id, 0, cstring(jsonResult))
     except:
       # Return empty array on error
-      w.webviewReturn(id, 0, "[]")
+      engineReturn(w, id, 0, "[]")
   , wPtr)
 
   # List only subdirectories inside a directory (for ebook group discovery)
-  w.webviewBind("fs_list_subdirs", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_list_subdirs", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1144,72 +1458,72 @@ proc main() =
             # Percent-encode directory names to survive the WebView2 binding bridge
             dirs.add(encodeUrl(extractFilename(path), usePlus=false))
       let jsonResult = $(%dirs)
-      w.webviewReturn(id, 0, cstring(jsonResult))
+      engineReturn(w, id, 0, cstring(jsonResult))
     except:
-      w.webviewReturn(id, 0, "[]")
+      engineReturn(w, id, 0, "[]")
   , wPtr)
 
   # Read a file as base64-encoded binary (for opening ebooks outside the app dir)
-  w.webviewBind("fs_read_file_binary", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_read_file_binary", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let filePath = decodeUrl(args[0].getStr())
       if not fileExists(filePath):
-        w.webviewReturn(id, 1, "\"ENOENT\"")
+        engineReturn(w, id, 1, "\"ENOENT\"")
         return
       let rawBytes = readFile(filePath)
       let encoded = encode(rawBytes)
-      w.webviewReturn(id, 0, cstring("\"" & encoded & "\""))
+      engineReturn(w, id, 0, cstring("\"" & encoded & "\""))
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
   # Add set_title binding for programmatic title changes from JS
-  w.webviewBind("set_title", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "set_title", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let newTitle = args[0].getStr()
-      w.setTitle(cstring(newTitle))
-      w.webviewReturn(id, 0, "true")
+      engineSetTitle(w, cstring(newTitle))
+      engineReturn(w, id, 0, "true")
     except:
-      w.webviewReturn(id, 1, "\"Failed to set title\"")
+      engineReturn(w, id, 1, "\"Failed to set title\"")
   , wPtr)
 
   # Add set_icon binding for programmatic icon changes from JS
-  w.webviewBind("set_icon", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "set_icon", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let iconPath = args[0].getStr()
-      let hwnd = cast[HWND](w.getWindow())
+      let hwnd = cast[HWND](engineGetWindow(w))
       setWindowIcon(hwnd, iconPath)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
   # =========================================================================
   # ADDITIONAL FILE SYSTEM BINDINGS (for full NW.js compatibility)
   # =========================================================================
 
-  w.webviewBind("fs_rename", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_rename", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let oldPath = decodeUrl(args[0].getStr())
       let newPath = decodeUrl(args[1].getStr())
       moveFile(oldPath, newPath)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_append_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_append_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1218,26 +1532,26 @@ proc main() =
       let f = open(filePath, fmAppend)
       f.write(content)
       f.close()
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_copy_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_copy_file", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let srcPath = decodeUrl(args[0].getStr())
       let destPath = decodeUrl(args[1].getStr())
       copyFile(srcPath, destPath)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("fs_stat", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_stat", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1248,10 +1562,10 @@ proc main() =
         "isFile": info.kind == pcFile,
         "isDirectory": info.kind == pcDir
       }
-      w.webviewReturn(id, 0, cstring($jsonResult))
+      engineReturn(w, id, 0, cstring($jsonResult))
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
   # =========================================================================
@@ -1260,7 +1574,7 @@ proc main() =
   # JS can fetch binary files directly via HTTP — zero base64 overhead.
   # =========================================================================
 
-  w.webviewBind("fs_map_dir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "fs_map_dir", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1272,47 +1586,47 @@ proc main() =
         normPath = normPath[0..^2]
 
       if not dirExists(normPath):
-        w.webviewReturn(id, 1, "\"Directory not found\"")
+        engineReturn(w, id, 1, "\"Directory not found\"")
         return
 
       # Reuse existing mapping for the same directory
       if normPath in externalHostMappings:
         let host = externalHostMappings[normPath]
         let url = "http://" & host & "/"
-        w.webviewReturn(id, 0, cstring("\"" & url & "\""))
+        engineReturn(w, id, 0, cstring("\"" & url & "\""))
         return
 
       # Create new VirtualHost mapping
       let hostName = "rover.ext." & $nextExtHostIdx
       inc nextExtHostIdx
-      w.setVirtualHostNameToFolderMapping(cstring(hostName), cstring(normPath), 1)
+      engineSetVHMapping(w, cstring(hostName), cstring(normPath), 1)
       externalHostMappings[normPath] = hostName
       echo &"[VHOST] Mapped {normPath} -> http://{hostName}/"
 
       let url = "http://" & hostName & "/"
-      w.webviewReturn(id, 0, cstring("\"" & url & "\""))
+      engineReturn(w, id, 0, cstring("\"" & url & "\""))
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
   # =========================================================================
   # SHELL AND PROCESS BINDINGS
   # =========================================================================
 
-  w.webviewBind("shell_open_item", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "shell_open_item", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let filePath = args[0].getStr()
       # Use ShellExecute to open with default application
       discard ShellExecute(0, "open", filePath, nil, nil, SW_SHOWNORMAL)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
-      w.webviewReturn(id, 1, "\"Failed to open item\"")
+      engineReturn(w, id, 1, "\"Failed to open item\"")
   , wPtr)
 
-  w.webviewBind("exec_command", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "exec_command", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
@@ -1320,112 +1634,117 @@ proc main() =
       # Execute command using osproc.execCmd
       let exitCode = osproc.execCmd(command)
       let jsonResult = %*{"exitCode": exitCode, "stdout": "", "stderr": ""}
-      w.webviewReturn(id, 0, cstring($jsonResult))
+      engineReturn(w, id, 0, cstring($jsonResult))
     except:
       let errMsg = getCurrentExceptionMsg().replace("\"", "\\\"")
-      w.webviewReturn(id, 1, cstring(&"\"{errMsg}\""))
+      engineReturn(w, id, 1, cstring(&"\"{errMsg}\""))
   , wPtr)
 
-  w.webviewBind("get_user_home", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "get_user_home", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let homeDir = getHomeDir().replace("\\", "\\\\")
-      w.webviewReturn(id, 0, cstring(&"\"{homeDir}\""))
+      engineReturn(w, id, 0, cstring(&"\"{homeDir}\""))
     except:
-      w.webviewReturn(id, 1, "\"Failed to get home directory\"")
+      engineReturn(w, id, 1, "\"Failed to get home directory\"")
   , wPtr)
 
   # =========================================================================
   # WINDOW MANAGEMENT BINDINGS
   # =========================================================================
 
-  w.webviewBind("window_minimize", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "window_minimize", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     ShowWindow(hwnd, SW_MINIMIZE)
-    w.webviewReturn(id, 0, "true")
+    engineReturn(w, id, 0, "true")
   , wPtr)
 
-  w.webviewBind("window_maximize", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "window_maximize", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     ShowWindow(hwnd, SW_MAXIMIZE)
-    w.webviewReturn(id, 0, "true")
+    engineReturn(w, id, 0, "true")
   , wPtr)
 
-  w.webviewBind("window_restore", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "window_restore", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     ShowWindow(hwnd, SW_RESTORE)
-    w.webviewReturn(id, 0, "true")
+    engineReturn(w, id, 0, "true")
   , wPtr)
 
-  w.webviewBind("window_focus", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "window_focus", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
-    let hwnd = cast[HWND](w.getWindow())
+    let hwnd = cast[HWND](engineGetWindow(w))
     SetForegroundWindow(hwnd)
-    w.webviewReturn(id, 0, "true")
+    engineReturn(w, id, 0, "true")
   , wPtr)
 
-  w.webviewBind("window_flash", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "window_flash", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let attention = args[0].getInt()
-      let hwnd = cast[HWND](w.getWindow())
+      let hwnd = cast[HWND](engineGetWindow(w))
       if attention > 0:
         FlashWindow(hwnd, TRUE)
       else:
         FlashWindow(hwnd, FALSE)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
   , wPtr)
 
-  w.webviewBind("set_window_position", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "set_window_position", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let x = args[0].getInt()
       let y = args[1].getInt()
-      let hwnd = cast[HWND](w.getWindow())
+      let hwnd = cast[HWND](engineGetWindow(w))
       SetWindowPos(hwnd, 0, x.cint, y.cint, 0, 0, SWP_NOSIZE or SWP_NOZORDER)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
-      w.webviewReturn(id, 1, "\"Failed to set position\"")
+      engineReturn(w, id, 1, "\"Failed to set position\"")
   , wPtr)
 
-  w.webviewBind("set_window_size", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "set_window_size", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let width = args[0].getInt()
       let height = args[1].getInt()
-      let hwnd = cast[HWND](w.getWindow())
+      let hwnd = cast[HWND](engineGetWindow(w))
       SetWindowPos(hwnd, 0, 0, 0, width.cint, height.cint, SWP_NOMOVE or SWP_NOZORDER)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
-      w.webviewReturn(id, 1, "\"Failed to set size\"")
+      engineReturn(w, id, 1, "\"Failed to set size\"")
   , wPtr)
 
-  w.webviewBind("set_always_on_top", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "set_always_on_top", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     try:
       let args = parseJson($req)
       let onTop = args[0].getBool()
-      let hwnd = cast[HWND](w.getWindow())
+      let hwnd = cast[HWND](engineGetWindow(w))
       if onTop:
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE)
       else:
         SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE or SWP_NOSIZE)
-      w.webviewReturn(id, 0, "true")
+      engineReturn(w, id, 0, "true")
     except:
-      w.webviewReturn(id, 1, "\"Failed to set always on top\"")
+      engineReturn(w, id, 1, "\"Failed to set always on top\"")
   , wPtr)
 
   echo ""
   echo "================================================"
   echo "  Rover - Application Running"
+  if config.forceCanvas:
+    echo "  Running in Canvas Mode (forced)"
+  else:
+    echo "  Running in WebGL Mode"
+  echo "------------------------------------------------"
   echo "  Close the window to exit"
   echo "================================================"
   echo ""
@@ -1437,10 +1756,10 @@ proc main() =
   RegisterHotKey(hwnd, 2, MOD_NOREPEAT, VK_F12)
 
   # Bind __rover_set_flush_ack so JS can signal that the final MEMFS flush completed
-  w.webviewBind("__rover_set_flush_ack", proc (id, req: cstring, arg: pointer) {.cdecl.} =
+  engineBind(w, "__rover_set_flush_ack", proc (id, req: cstring, arg: pointer) {.cdecl.} =
     let w = cast[Webview](arg)
     flushAckReceived = true
-    w.webviewReturn(id, 0, "true")
+    engineReturn(w, id, 0, "true")
   , wPtr)
 
   var msg: MSG
@@ -1460,11 +1779,11 @@ proc main() =
         flushAckReceived = false
         closeStartTick = GetTickCount()
         echo "[DUMP] WM_CLOSE — signalling JS for final DB dump..."
-        w.eval("if(typeof window.__roverOnClose==='function'){window.__roverOnClose();}else{window.__rover_set_flush_ack();}".cstring)
+        engineEval(w, "if(typeof window.__roverOnClose==='function'){window.__roverOnClose();}else{window.__rover_set_flush_ack();}".cstring)
         continue  # Return control to event loop — do NOT block
       if msg.message == WM_HOTKEY:
         if msg.wParam == 2:
-          w.openDevTools()
+          engineOpenDevTools(w)
       TranslateMessage(msg.addr)
       DispatchMessage(msg.addr)
 
@@ -1480,29 +1799,118 @@ proc main() =
         echo "[DUMP] Flush ACK received — closing cleanly"
         isClosing = false
         DestroyWindow(hwnd)
-        when defined(rwebview): PostQuitMessage(0)  # SDL doesn't call PostQuitMessage
+        if useRgss: PostQuitMessage(0)  # SDL doesn't call PostQuitMessage
       elif GetTickCount() - closeStartTick >= 5000:
         echo "[DUMP] Flush timeout (5s) — closing anyway"
         isClosing = false
         DestroyWindow(hwnd)
-        when defined(rwebview): PostQuitMessage(0)  # SDL doesn't call PostQuitMessage
+        if useRgss: PostQuitMessage(0)  # SDL doesn't call PostQuitMessage
 
-    # Drive the rwebview SDL event loop (event processing + rendering).
-    # webview_run_step polls SDL events, renders one frame, and returns 1 when
-    # SDL_EVENT_WINDOW_CLOSE_REQUESTED fires — it also posts WM_CLOSE to this
-    # Win32 message queue so the handler above picks it up next iteration.
-    # For the native WebView2 backend, Sleep(1) is sufficient since WebView2
-    # drives its own rendering and event loop internally.
-    when defined(rwebview):
-      discard w.runStep()
+    # Drive the engine event loop.
+    # rgss: webview_run_step polls SDL events, renders one frame, returns 1 on close.
+    # native: WebView2 drives its own rendering; Sleep(1) prevents spin.
+    if useRgss:
+      discard engineRunStep(w)
     else:
-      # Sleep to prevent CPU spinning
-      # No poll() needed - HTTP server runs in its own thread with its own event loop
       Sleep(1)
 
-  w.destroy()
+  engineDestroy(w)
 
   echo "[INFO] Application closed"
 
 when isMainModule:
   main()
+
+
+# =============================================================================
+# [Documentation]
+# =============================================================================
+#
+# Configuration  (package.json fields)
+# -------------------------------------
+#   name           string  — App identifier; used as fallback window title.
+#   main           string  — Relative path to the entry-point HTML file.
+#   engine         string  — "native" (default) or "rgss".
+#   httpServer     bool    — false: VirtualHost mode; true: embedded HTTP server.
+#   renderer       string  — "webgl" (default) or "canvas" (disables WebGL).
+#   window.title   string  — Window title (overrides name).
+#   window.icon    string  — Relative path to a .ico or .png icon file.
+#   window.width   int     — Initial window width in pixels.
+#   window.height  int     — Initial window height in pixels.
+#   window.maximize    bool  — Open window maximized.
+#   window.fullscreen  bool  — Open window borderless-fullscreen.
+#
+# Engine Selection Flow
+# ---------------------
+#   1. loadConfig() reads package.json from getCurrentDir().
+#   2. If engine == "rgss":
+#        a. Check fileExists(getCurrentDir() / "rgss.dll").
+#        b. loadRgssEngine(dllPath) resolves all webview_* proc pointers.
+#        c. useRgss = true; all engineXxx() wrappers route to rgss.* procs.
+#        d. If DLL missing or fails: rgssNotFound = true, fall back to native
+#           and display an error page via base64 data URI in WebView2.
+#   3. If engine == "native" (default):
+#        useRgss = false; engineXxx() wrappers call w.method() (webview.cc).
+#
+# Engine Dispatch Wrappers
+# ------------------------
+#   All webview calls are routed through runtime-selected procs:
+#   engineCreate, engineDestroy, engineRunStep, engineNavigate, engineInit,
+#   engineEval, engineSetTitle, engineSetSize, engineGetWindow,
+#   engineGetSavedPlacement, engineBind, engineReturn,
+#   engineOpenDevTools, engineSetVHMapping.
+#
+# Main Loop
+# ---------
+#   Win32 PeekMessage loop; not webview_run() — rover drives the loop directly.
+#   - Native mode : Sleep(1) per tick (WebView2 renders independently).
+#   - RGSS mode   : engineRunStep(w) per tick (SDL polls + renders one frame).
+#   F12 hotkey    : RegisterHotKey + WM_HOTKEY → engineOpenDevTools.
+#
+# Close / Flush Flow
+# ------------------
+#   On WM_CLOSE:
+#     1. isClosing = true; JS is called via window.__roverOnClose().
+#     2. JS runs async IndexedDB/MEMFS dump, then calls
+#        window.__rover_set_flush_ack() to signal completion.
+#     3. Rover polls for ACK each tick; calls DestroyWindow when received
+#        or after a 5-second hard timeout.
+#     4. If useRgss: PostQuitMessage(0) (SDL does not auto-post it).
+#
+# JS Native Bindings  (webview_bind names visible from JavaScript)
+# ----------------------------------------------------------------
+#   exit_app               — Close the application.
+#   center_window          — Center window on the current monitor.
+#   toggle_fullscreen      — Toggle borderless fullscreen.
+#   toggle_devtools        — Open WebView2 / rwebview DevTools.
+#   get_exe_directory      — Returns the directory containing rover.exe.
+#   read_file              — Read a local file; returns base64-encoded bytes.
+#   write_file             — Write base64 bytes to a local file.
+#   delete_file            — Delete a local file.
+#   file_exists            — Check whether a file path exists.
+#   list_files             — Return directory listing as a JSON array.
+#   get_file_info          — File metadata (size, mtime, isDir).
+#   make_dir               — Create a directory tree (mkdirAll).
+#   remove_dir             — Remove a directory tree (rmdir -r).
+#   open_external          — Open a URL in the system default browser.
+#   map_directory          — Map a local dir to a rover.ext.N VirtualHost.
+#   set_window_title       — Update the OS window title at runtime.
+#   set_window_icon        — Load and apply an icon from a file path.
+#   set_window_size        — Resize the window programmatically.
+#   set_window_position    — Move the window to an (x, y) position.
+#   get_window_rect        — Return current window bounding rect as JSON.
+#   set_always_on_top      — Pin / unpin window above all others.
+#   __rover_set_flush_ack  — Internal: signal that JS async flush completed.
+#   fd_open, fd_read, fd_write, fd_close, fd_lseek, fd_fsize, fd_ftruncate
+#                          — CRT fd bindings for PGlite NODEFS support.
+#
+# Polyfill Preamble  (injected before page scripts via webview_init)
+# ------------------------------------------------------------------
+#   window.__roverBaseDir          — Absolute path to the game directory.
+#   window.__roverInitialFullscreen — true if fullscreen at launch.
+#   window.__roverInitialMaximize   — true if maximized at launch.
+#   window.__roverRestoreToMaximize — true if fullscreen→maximize on exit.
+#   window.__roverForceCanvas       — true if renderer=canvas.
+#   window.__roverArgv              — Array of CLI arguments passed to exe.
+#
+# =============================================================================

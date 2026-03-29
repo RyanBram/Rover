@@ -1,3 +1,5 @@
+// This test cannot use imports because it needs to run in non-strict mode.
+
 function assert(actual, expected, message) {
     if (arguments.length == 1)
         expected = true;
@@ -15,9 +17,6 @@ function assert(actual, expected, message) {
                 (message ? " (" + message + ")" : ""));
 }
 
-// load more elaborate version of assert if available
-try { __loadScript("test_assert.js"); } catch(e) {}
-
 /*----------------*/
 
 function test_while()
@@ -29,7 +28,7 @@ function test_while()
         c++;
         i++;
     }
-    assert(c === 3);
+    assert(c, 3);
 }
 
 function test_while_break()
@@ -149,7 +148,7 @@ function test_for_in()
 
 function test_for_in2()
 {
-    var i, tab;
+    var i;
     tab = [];
     for(i in {x:1, y: 2, z:3}) {
         if (i === "y")
@@ -165,29 +164,6 @@ function test_for_in2()
         tab.push(i);
     }
     assert(tab.toString() == "x,y");
-}
-
-function test_for_in_proxy() {
-    let removed_key = "";
-    let target = {}
-    let proxy = new Proxy(target, {
-        ownKeys: function() {
-            return ["a", "b", "c"];
-        },
-        getOwnPropertyDescriptor: function(target, key) {
-            if (removed_key != "" && key == removed_key)
-                return undefined;
-            else
-                return { enumerable: true, configurable: true, value: this[key] };
-        }
-    });
-    let str = "";
-    for(let o in proxy) {
-        str += " " + o;
-        if (o == "a")
-            removed_key = "b";
-    }
-    assert(str == " a c");
 }
 
 function test_for_break()
@@ -371,16 +347,6 @@ function test_try_catch8()
     assert(s === "xafyaf");
 }
 
-function test_cyclic_labels()
-{
-    /* just check that it compiles without a crash */
-    for (;;) {
-        l: break l;
-        l: break l;
-        l: break l;
-    }
-}
-
 test_while();
 test_while_break();
 test_do_while();
@@ -390,7 +356,6 @@ test_switch1();
 test_switch2();
 test_for_in();
 test_for_in2();
-test_for_in_proxy();
 
 test_try_catch1();
 test_try_catch2();

@@ -1,34 +1,73 @@
-## rwebview.nim
-##
-## Backend implementation for ``webview.nim`` backed by SDL3 + QuickJS + Lexbor
-## instead of OS-native webviews (Edge WebView2 / WKWebView / WebKitGTK).
-##
-## This module exports the **same C ABI** as ``libs/webview/webview.h``
-## (``webview_create``, ``webview_navigate``, ``webview_bind``, etc.) so that
-## ``src/webview.nim``'s ``importc`` declarations resolve here transparently.
-## No changes are needed to ``src/rover.nim`` or ``src/webview.nim``.
-## Compile with ``-d:rwebview`` to activate this backend.
-##
-## Phase 1: SDL3 window + QuickJS bootstrap.
-##   - Opens an SDL3 window with an OpenGL 3.3 Core Profile context.
-##   - Creates a QuickJS runtime and context.
-##   - Binds console.log / console.warn / console.error -> stderr.
-##   - Runs the main event loop (SDL_PollEvent + SDL_GL_SwapWindow).
-##   - Exports webview_eval(), webview_init(), webview_set_title(),
-##     webview_set_size(), webview_get_window().
-##
-## Phase 2: HTML Script Loader (Lexbor).
-##   - webview_init() queues JS preamble strings.
-##   - webview_navigate(url): resolves http://rover.assets/<path> → local path,
-##     reads the HTML file, parses it via Lexbor, extracts <script> tags in DOM
-##     order, injects all queued preamble JS first, then executes each script.
-##   - webview_set_html(html): parses the supplied HTML string in-memory via
-##     Lexbor and executes scripts the same way.
-##   - Virtual URL resolution: http://rover.assets/<path> → baseDir/<path>
-##     using the virtualHosts table populated by
-##     webview_set_virtual_host_name_to_folder_mapping().
+# =============================================================================
+# rwebview.nim
+# Backend implementation for webview.nim backed by SDL3 + QuickJS + Lexbor
+# =============================================================================
+#
+# Author    : Ryan Bramantya
+# Copyright : Copyright (c) 2026 Ryan Bramantya
+# License   : Apache License 2.0
+# Website   : https://github.com/RyanBram/Rover
+#
+# -----------------------------------------------------------------------------
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# -----------------------------------------------------------------------------
+#
+# Description:
+#   Backend implementation for Rover's `webview.nim` instead of OS-native
+#   webviews (Edge WebView2 / WKWebView / WebKitGTK).
+#
+#   This module exports the same C ABI as `libs/webview/webview.h`
+#   (`webview_create`, `webview_navigate`, `webview_bind`, etc.) so that
+#   `src/webview.nim`'s `importc` declarations resolve here transparently.
+#   No changes are needed to `src/rover.nim` or `src/webview.nim`.
+#   Compile with `-d:rwebview` to activate this backend.
+#
+#   SDL3 window + QuickJS bootstrap:
+#   - Opens an SDL3 window with an OpenGL 3.3 Core Profile context.
+#   - Creates a QuickJS runtime and context.
+#   - Binds console.log / console.warn / console.error -> stderr.
+#   - Runs the main event loop (SDL_PollEvent + SDL_GL_SwapWindow).
+#   - Exports webview_eval(), webview_init(), webview_set_title(),
+#     webview_set_size(), webview_get_window().
+#
+#   HTML Script Loader (Lexbor):
+#   - webview_init() queues JS preamble strings.
+#   - webview_navigate(url): resolves http://rover.assets/<path> -> local path,
+#     reads the HTML file, parses it via Lexbor, extracts <script> tags in DOM
+#     order, injects all queued preamble JS first, then executes each script.
+#   - webview_set_html(html): parses the supplied HTML string in-memory via
+#     Lexbor and executes scripts the same way.
+#   - Virtual URL resolution: http://rover.assets/<path> -> baseDir/<path>
+#     using the virtualHosts table populated by
+#     webview_set_virtual_host_name_to_folder_mapping().
+#
+# Documentation:
+#   See [Documentation] section at the bottom of this file.
+#
+# -----------------------------------------------------------------------------
+#
+# Included by:
+#   - rover.nim                # via d:rwebview compile flag
+#   - webview.nim              # fallback substitute
+#
+# Used by:
+#   - End-user application using Rover Framework
+#
+# =============================================================================
 
-import std/[os, strutils, tables, math]
+import std/[os, strutils, tables, math, base64, locks, algorithm]
 
 # -- Force discrete GPU on hybrid-graphics laptops (Intel + NVIDIA / AMD) ----
 # The GPU driver checks for these exported symbols in the .exe's PE table.
@@ -42,28 +81,65 @@ __declspec(dllexport) unsigned long AmdPowerXpressRequestHighPerformance = 0x000
 
 # -- compile-time paths ------------------------------------------------------
 const rwebviewRoot = currentSourcePath().parentDir()
-const qjsDir       = rwebviewRoot / "libs" / "quickjs"
 const libDir       = rwebviewRoot / "bin" / "lib"
 const binDir       = rwebviewRoot / "bin" / "bin"
 
-# Include path for rwebview_qjs_wrap.c so it can find quickjs.h
-{.passC: "-I" & qjsDir.}
-# Include path for rwebview_lexbor_wrap.c so it can find lexbor/*.h
-const lexborIncDir = rwebviewRoot / "bin" / "include"
-{.passC: "-I" & lexborIncDir.}
+# QuickJS is the sole JS engine. The static library (libqjs.a) and header
+# (quickjs.h) are installed to bin/lib and bin/include by CMake in buildrwebview.bat.
+# Header: bin/include/quickjs.h  (QuickJS, has QUICKJS_NG=1 define)
+# Library: bin/lib/libqjs.a      (built from libs/quickjs via CMake)
+const qjsLibPath = libDir / "libqjs.a"
+{.passL: qjsLibPath.}
+
+# Include path for installed headers (quickjs.h, lexbor/*.h)
+const includeDir = rwebviewRoot / "bin" / "include"
+{.passC: "-I" & includeDir.}
+# SDL3 static include path (when using -d:sdlStatic flag)
+when defined(sdlStatic):
+  const sdl3StaticIncDir = rwebviewRoot / "bin" / "staticlib" / "include"
+  {.passC: "-I" & sdl3StaticIncDir.}
 # GCC extensions needed by quickjs.c (asm volatile spin-loop)
 {.passC: "-std=gnu99".}
-# Link against compiled static libraries
-{.passL: "-L" & libDir.}
-{.passL: "-lquickjs".}
-{.passL: "-llexbor_static".}
+# Link against compiled static libraries (use full paths for DLL compatibility)
+const lexborLibPath = libDir / "liblexbor_static.a"
+{.passL: lexborLibPath.}
 
 # Compile the thin C wrappers.
-{.compile: "c_src/rwebview_qjs_wrap.c".}
+{.compile: "c_src/rwebview_quickjs_wrap.c".}
 {.compile: "c_src/rwebview_lexbor_wrap.c".}
+{.compile: "c_src/rwebview_lexbor_css_wrap.c".}
 
-# SDL3 DLL -- loaded at runtime; absolute path for Phase 1 dev.
-const sdl3Dll = binDir / "SDL3.dll"
+# -- Native UI C libraries (nanovg, flex, microui) --
+# Include path for c_src/ headers (nanovg.h, flex.h, microui.h, fontstash.h)
+const cSrcDir = rwebviewRoot / "c_src"
+{.passC: "-I" & cSrcDir.}
+# Include path for nanovg_gl.h (from nanovg upstream) used by the GL3 backend
+const nanovgSrcDir = rwebviewRoot / "libs" / "nanovg" / "src"
+{.passC: "-I" & nanovgSrcDir.}
+# FreeType2 (standalone static build installed by buildrwebview.bat to bin/freetype/)
+const ftIncDir = rwebviewRoot / "bin" / "freetype" / "include" / "freetype2"
+{.passC: "-I" & ftIncDir.}
+const ftLibPath = rwebviewRoot / "bin" / "freetype" / "lib" / "libfreetype.a"
+{.passL: ftLibPath.}
+# NanoVG core (paths, shapes, text via fontstash + FreeType2)
+const nanovgCPath = rwebviewRoot / "libs" / "nanovg" / "src" / "nanovg.c"
+{.compile(nanovgCPath, "-DFONS_USE_FREETYPE -I" & ftIncDir).}
+# NanoVG GL3 backend (loads GL functions via SDL_GL_GetProcAddress)
+{.compile: "c_src/rwebview_nanovg_gl3.c".}
+# Fonstash CPU wrapper for Canvas2D text rendering (replaces SDL_ttf)
+{.compile: "c_src/rwebview_fonstash_core.c".}
+# CSS Flexbox layout engine
+{.compile: "c_src/flex.c".}
+# microui immediate-mode widget toolkit
+{.compile: "c_src/microui.c".}
+# microui helper (callback setters for Nim FFI)
+{.compile: "c_src/rwebview_microui_helper.c".}
+# Link opengl32 for base GL types used by nanovg_gl backend
+{.passL: "-lopengl32".}
+
+# SDL3 DLL -- only needed when NOT using static linking
+when not defined(sdlStatic):
+  const sdl3Dll = binDir / "SDL3.dll"
 
 # ===========================================================================
 # C ABI types  (must match webview.h exactly)
@@ -92,7 +168,15 @@ const
 # ===========================================================================
 include "rwebview_ffi_sdl3"
 include "rwebview_ffi_sdl3_media"
-include "rwebview_ffi_quickjs"
+include "rgss/rgss_quickjs_ffi"
+include "rgss/rgss_quickjs"
+
+# MicroQuickJS adaptor (opt-in via -d:withMQuickJS)
+when defined(withMQuickJS):
+  include "rgss/rgss_mquickjs_ffi"
+  include "rgss/rgss_mquickjs"
+
+var gScriptEngine: ScriptEngine  ## RGSS engine vtable (shared)
 
 # ===========================================================================
 # Internal state types
@@ -104,11 +188,11 @@ include "rwebview_ffi_quickjs"
 type
   RAfEntry = object
     id: int
-    fn: JSValue   ## DupValue'd JS function reference
+    fn: ScriptValue   ## DupValue'd scripting function reference
 
   TimerEntry = object
     id:       int
-    fn:       JSValue   ## DupValue'd JS function reference
+    fn:       ScriptValue   ## DupValue'd scripting function reference
     fireAt:   uint64    ## SDL_GetTicks() target (ms)
     interval: uint64    ## 0 = setTimeout; >0 = setInterval repeat ms
     active:   bool
@@ -123,6 +207,7 @@ type RWebviewState = object
   glCtx:        SDL_GLContext
   rt:           ptr JSRuntime
   jsCtx:        ptr JSContext
+  scriptCtx:    ptr ScriptCtx  ## RGSS wrapper around jsCtx (Phase SL-2+)
   running:      bool
   width:        cint
   height:       cint
@@ -134,6 +219,10 @@ type RWebviewState = object
   timers:       seq[TimerEntry]
   mouseButtons: uint32   ## bitmask of currently-pressed JS mouse buttons
   bindings:     Table[string, BindingEntry]  ## Phase 9: webview_bind registry
+  navigateUrl:  string   ## original URL passed to webview_navigate (used for window.location)
+  savedPlacement: array[44, byte]  ## WINDOWPLACEMENT bytes — saved before fullscreen (initialState=2)
+  screenW: cint   ## actual monitor width in pixels (for screen.width)
+  screenH: cint   ## actual monitor height in pixels (for screen.height)
 
 
 # ===========================================================================
@@ -150,6 +239,7 @@ include "rwebview_gl"
 include "rwebview_xhr"
 include "rwebview_audio"
 include "rwebview_storage"
+include "rwebview_ui"
 
 # ===========================================================================
 # Phase 9 — webview_bind / webview_return channel
@@ -243,19 +333,23 @@ proc navigateImpl(state: ptr RWebviewState; htmlContent: string;
 
   # ── 0. Reset per-page timer / rAF state ──────────────────────────────
   # Free any JS function references from RPG Maker scripts that ran before.
+  gWebGLActive = false  # reset WebGL-mode flag; set again in initDrawingBuffer
+  glJSBoundFBO = 0      # reset JS framebuffer binding tracker
+  clearAssetCaches()    # OPT-4/5: clear file + image caches on new page load
   let ctx = state.jsCtx
   for e in state.rafPending:
-    rw_JS_FreeValue(ctx, e.fn)
+    state.scriptCtx.freeValue(e.fn)
   for t in state.timers:
     if t.active:
-      rw_JS_FreeValue(ctx, t.fn)
+      state.scriptCtx.freeValue(t.fn)
   state.rafPending = @[]
   state.timers = @[]
   state.nextTimerId = 1
   state.mouseButtons = 0
 
   # ── 1. Inject DOM preamble (window / document stubs) ─────────────────
-  let domJs = domPreamble(state.width, state.height)
+  let domJs = domPreamble(state.width, state.height, state.navigateUrl,
+                          state.screenW, state.screenH)
   let domRet = JS_Eval(ctx, cstring(domJs), csize_t(domJs.len),
                        "<dom-preamble>", JS_EVAL_TYPE_GLOBAL)
   if not jsCheck(ctx, domRet, "<dom-preamble>"):
@@ -264,11 +358,11 @@ proc navigateImpl(state: ptr RWebviewState; htmlContent: string;
 
   # ── 2. Bind native functions into the JS global ───────────────────────
   bindDom(state)
-  bindWebGL(state)
-  bindCanvas2D(state)
+  bindWebGL(state.scriptCtx, state.width, state.height)
+  bindCanvas2D(state.scriptCtx)
   bindXhr(state)
-  bindAudio(state)
-  bindStorage(state)
+  bindAudio(state.scriptCtx)
+  bindStorage(state.scriptCtx)
   rebindBindings(state)   # Phase 9: re-inject __rw_calls + all webview_bind glue
 
   # ── 3. Inject all preamble JS registered via webview_init() ──────────
@@ -287,23 +381,42 @@ proc navigateImpl(state: ptr RWebviewState; htmlContent: string;
   # so that canvas2d.getFont() can resolve custom font families.
   parseStylesheetFonts(htmlContent, state.baseDir)
 
+  # Inject virtual DOM elements from HTML body (canvas, div, input, etc.)
+  # so that document.getElementById() resolves HTML-declared elements.
+  let elemsJs = buildHtmlElemsJs(htmlContent)
+  if elemsJs.len > 0:
+    let elemsRet = JS_Eval(state.jsCtx, cstring(elemsJs),
+                           csize_t(elemsJs.len), "<html-elems>",
+                           JS_EVAL_TYPE_GLOBAL)
+    discard jsCheck(state.jsCtx, elemsRet, "<html-elems>")
+
+  # ── 4b. Speculative preload scanner ────────────────────────────────────
+  # OPT-2: Scan HTML for <img>, <script>, <link> resource URLs and pre-cache
+  # their file contents before JS execution. This mirrors browser preload
+  # scanners that fetch resources ahead of the HTML parser.
+  preloadScanHtml(htmlContent, state.baseDir)
+
   # ── 5. Execute page scripts ───────────────────────────────────────────
   executeScripts(scripts, ctx, htmlPath)
 
-  # ── 6. Fire window.onload if it was set ──────────────────────────────
-  let global  = JS_GetGlobalObject(ctx)
-  let winObj  = JS_GetPropertyStr(ctx, global, "window")
-  rw_JS_FreeValue(ctx, global)
-  let onload  = JS_GetPropertyStr(ctx, winObj, "onload")
-  rw_JS_FreeValue(ctx, winObj)
-  if JS_IsFunction(ctx, onload) != 0:
-    let ret = JS_Call(ctx, onload, rw_JS_Undefined(), 0, nil)
-    if not jsCheck(ctx, ret, "window.onload"):
-      stderr.writeLine("[rwebview] window.onload threw an exception")
-    # Flush microtasks so Promise.then callbacks (e.g. document.fonts.ready.then)
-    # resolve now — before the first rAF tick checks them.
-    while JS_ExecutePendingJob(state.rt, nil) > 0: discard
-  rw_JS_FreeValue(ctx, onload)
+  # ── 6. Fire DOMContentLoaded, then window load event ─────────────────
+  # DOMContentLoaded fires before 'load' — some games (jQuery, GDevelop)
+  # use it instead of window.onload to start initialization.
+  let dclJs = "__rw_dispatchEvent(document,'DOMContentLoaded',{bubbles:true,cancelable:false});"
+  let dclRet = JS_Eval(ctx, cstring(dclJs), csize_t(dclJs.len),
+                       "<DOMContentLoaded>", JS_EVAL_TYPE_GLOBAL)
+  discard jsCheck(ctx, dclRet, "<DOMContentLoaded>")
+  flushJobs(state.rt)
+
+  # window 'load' event — dispatched through __rw_dispatchEvent so ALL
+  # window.addEventListener('load',...) handlers fire, not just window.onload.
+  let loadJs = "__rw_dispatchEvent(window,'load',{bubbles:false,cancelable:false});"
+  let loadRet = JS_Eval(ctx, cstring(loadJs), csize_t(loadJs.len),
+                        "<window-load>", JS_EVAL_TYPE_GLOBAL)
+  discard jsCheck(ctx, loadRet, "<window-load>")
+  # Flush microtasks so Promise.then callbacks (e.g. document.fonts.ready.then)
+  # resolve now — before the first rAF tick checks them.
+  flushJobs(state.rt)
 
 # ===========================================================================
 
@@ -353,6 +466,78 @@ proc bindConsole(ctx: ptr JSContext) =
 # ===========================================================================
 
 # ===========================================================================
+# Win32 helpers for fullscreen / DPI (Windows only)
+# ===========================================================================
+when defined(windows):
+  type
+    RwPoint {.pure, bycopy.} = object
+      x, y: int32
+    RwRect {.pure, bycopy.} = object
+      left, top, right, bottom: int32
+    RwWindowPlacement {.pure, bycopy.} = object
+      length:           uint32
+      flags:            uint32
+      showCmd:          uint32
+      ptMinPosition:    RwPoint
+      ptMaxPosition:    RwPoint
+      rcNormalPosition: RwRect
+    RwMonitorInfo {.pure, bycopy.} = object
+      cbSize:    uint32
+      rcMonitor: RwRect
+      rcWork:    RwRect
+      dwFlags:   uint32
+  static:
+    assert sizeof(RwWindowPlacement) == 44, "WINDOWPLACEMENT size mismatch"
+    assert sizeof(RwMonitorInfo) == 40, "MONITORINFO size mismatch"
+  const
+    RW_GWL_STYLE          = (-16).cint
+    RW_WS_OVERLAPPEDWINDOW = 0x00CF0000'i32
+    RW_SWP_NOOWNERZORDER  = 0x0200'u32
+    RW_SWP_FRAMECHANGED   = 0x0020'u32
+    RW_SWP_NOMOVE         = 0x0002'u32
+    RW_SWP_NOSIZE         = 0x0001'u32
+    RW_SWP_NOZORDER       = 0x0004'u32
+    RW_MONITOR_DEFAULT_PRIMARY = 1'u32
+    RW_SW_SHOWMAXIMIZED   = 3.cint
+  proc rwGetWindowLong(hwnd: pointer; nIndex: cint): int32
+      {.importc: "GetWindowLongA", stdcall, dynlib: "user32.dll".}
+  proc rwSetWindowLong(hwnd: pointer; nIndex: cint; newLong: int32): int32
+      {.importc: "SetWindowLongA", stdcall, dynlib: "user32.dll".}
+  proc rwGetWindowPlacement(hwnd: pointer; lpwndpl: pointer): bool
+      {.importc: "GetWindowPlacement", stdcall, dynlib: "user32.dll".}
+  proc rwSetWindowPos(hwnd: pointer; hwndAfter: pointer;
+                      x, y, cx, cy: cint; flags: uint32): bool
+      {.importc: "SetWindowPos", stdcall, dynlib: "user32.dll".}
+  proc rwMonitorFromWindow(hwnd: pointer; dwFlags: uint32): pointer
+      {.importc: "MonitorFromWindow", stdcall, dynlib: "user32.dll".}
+  proc rwGetMonitorInfo(hmon: pointer; mi: pointer): bool
+      {.importc: "GetMonitorInfoA", stdcall, dynlib: "user32.dll".}
+  proc rwShowWindow(hwnd: pointer; nCmdShow: cint): bool
+      {.importc: "ShowWindow", stdcall, dynlib: "user32.dll".}
+  proc rwGetSystemMetrics(nIndex: cint): cint
+      {.importc: "GetSystemMetrics", stdcall, dynlib: "user32.dll".}
+  const
+    RW_SM_CXSCREEN = 0.cint
+    RW_SM_CYSCREEN = 1.cint
+
+# Console window handle for F12 toggle
+var rwConsoleHwnd: pointer = nil
+var rwConsoleVisible: bool = false
+
+# ── Win32 helpers to disable the console window's X (close) button ──────────
+# SetWindowLongPtrW(GWLP_WNDPROC) cannot subclass a console window because the
+# window lives in conhost.exe (a separate process).  Instead we remove the
+# close entry from the system menu; the button goes grey and clicking it has no
+# effect, so closing the console no longer terminates the process.
+when defined(windows):
+  proc rwGetSystemMenu(hwnd: pointer; bRevert: bool): pointer
+      {.importc: "GetSystemMenu", stdcall, dynlib: "user32.dll".}
+  proc rwDeleteMenu(hMenu: pointer; nPos: uint32; wFlags: uint32): bool
+      {.importc: "DeleteMenu", stdcall, dynlib: "user32.dll".}
+  proc rwDrawMenuBar(hwnd: pointer): bool
+      {.importc: "DrawMenuBar", stdcall, dynlib: "user32.dll".}
+
+# ===========================================================================
 # Lifecycle
 # ===========================================================================
 
@@ -361,6 +546,11 @@ proc webview_create*(debug: cint = 0; window: pointer = nil;
                      initialState: cint = 0): Webview
     {.exportc, cdecl.} =
   ## Exported C ABI entry point.  Matched by ``webview_create`` in webview.h.
+  # DPI-unaware mode: Windows virtualises the window so it appears at the OS
+  # display-scale size (e.g. 150% → window renders at 1.5× its logical size).
+  # Must be set before SDL_Init.
+  when defined(windows):
+    discard SDL_SetHint("SDL_WINDOWS_DPI_AWARENESS", "unaware")
   if not SDL_Init(SDL_INIT_VIDEO or SDL_INIT_AUDIO):
     stderr.writeLine("[rwebview] SDL_Init failed: " & $SDL_GetError())
     return nil
@@ -370,14 +560,29 @@ proc webview_create*(debug: cint = 0; window: pointer = nil;
 
   # Allocate a debug console for GUI apps (--app:gui) so that console.log,
   # echo, and stderr output is visible during development.
+  # The console starts hidden; press F12 to toggle it.
+  # The close button is disabled (greyed out) so that accidentally closing the
+  # console window does NOT terminate the game process.
   when defined(windows):
     if debug != 0:
       proc AllocConsole(): int32 {.importc, stdcall, dynlib: "kernel32".}
+      proc GetConsoleWindow(): pointer {.importc, stdcall, dynlib: "kernel32".}
       proc c_freopen(path, mode: cstring; stream: File): pointer
           {.importc: "freopen", header: "<stdio.h>".}
       discard AllocConsole()
       discard c_freopen("CONOUT$", "w", stdout)
       discard c_freopen("CONOUT$", "w", stderr)
+      rwConsoleHwnd = GetConsoleWindow()
+      if rwConsoleHwnd != nil:
+        discard rwShowWindow(rwConsoleHwnd, 0)  # SW_HIDE = 0
+        rwConsoleVisible = false
+        # Grey out / disable the X button so closing the console does not kill
+        # the game.  DeleteMenu on SC_CLOSE removes the entry from the system
+        # menu; the title-bar button renders as greyed-out automatically.
+        let sysMenu = rwGetSystemMenu(rwConsoleHwnd, false)
+        if sysMenu != nil:
+          discard rwDeleteMenu(sysMenu, 0xF060'u32, 0)  # SC_CLOSE, MF_BYCOMMAND
+          discard rwDrawMenuBar(rwConsoleHwnd)
 
   # Request hardware-accelerated double-buffered OpenGL 3.3 Core context
   discard SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1)
@@ -393,6 +598,11 @@ proc webview_create*(debug: cint = 0; window: pointer = nil;
     stderr.writeLine("[rwebview] SDL_CreateWindow failed: " & $SDL_GetError())
     SDL_Quit()
     return nil
+  # NOTE: With SDL_WINDOWS_DPI_AWARENESS=permonitorv2, SDL3 already handles DPI
+  # transparently at the OS level.  A logical 816×624 window is automatically
+  # displayed as 1224×936 physical pixels at 150% DPI — no manual scaling needed.
+  # We only query the DPI scale to compute screen.width/height in logical pixels
+  # so that polyfill.js's checkFullScreen() comparison works correctly.
 
   let glCtx = SDL_GL_CreateContext(sdlWin)
   if glCtx == nil:
@@ -431,29 +641,97 @@ proc webview_create*(debug: cint = 0; window: pointer = nil;
   state.glCtx     = glCtx
   state.rt        = rt
   state.jsCtx     = ctx
+  # RGSS: wrap existing JSContext in a ScriptCtx for migrated modules.
+  if gScriptEngine.newCtx == nil:
+    gScriptEngine = newQuickJSEngine()
+  gQJSState.rt = state.rt
+  state.scriptCtx = qjs_wrapExistingCtx(addr gScriptEngine, ctx)
+  stderr.writeLine("[rwebview] Script interpreter: " & $gScriptEngine.name &
+                   " v" & $gScriptEngine.version)
   state.running   = true
   state.width     = width
   state.height    = height
   state.preamble  = @[]
+  # Use GetSystemMetrics for screen.width/height in JS (returns logical pixels).
+  when defined(windows):
+    state.screenW = rwGetSystemMetrics(RW_SM_CXSCREEN)
+    state.screenH = rwGetSystemMetrics(RW_SM_CYSCREEN)
+  when not defined(windows):
+    state.screenW = width
+    state.screenH = height
+
+  # Apply initial window state — must be done after state allocation so that
+  # savedPlacement can be stored directly in the state struct.
+  when defined(windows):
+    let initProps = SDL_GetWindowProperties(sdlWin)
+    let initHwnd  = SDL_GetPointerProperty(initProps, "SDL.window.win32.hwnd", nil)
+    if initHwnd != nil:
+      if initialState == 1:   # maximize
+        discard rwShowWindow(initHwnd, RW_SW_SHOWMAXIMIZED)
+      elif initialState == 2: # fullscreen — save normal placement then cover monitor
+        var wndpl: RwWindowPlacement
+        wndpl.length = uint32(sizeof(RwWindowPlacement))
+        discard rwGetWindowPlacement(initHwnd, addr wndpl)
+        copyMem(addr state.savedPlacement[0], addr wndpl, sizeof(RwWindowPlacement))
+        let style = rwGetWindowLong(initHwnd, RW_GWL_STYLE)
+        var mi: RwMonitorInfo
+        mi.cbSize = uint32(sizeof(RwMonitorInfo))
+        let hmon = rwMonitorFromWindow(initHwnd, RW_MONITOR_DEFAULT_PRIMARY)
+        discard rwGetMonitorInfo(hmon, addr mi)
+        discard rwSetWindowLong(initHwnd, RW_GWL_STYLE,
+                                style and not RW_WS_OVERLAPPEDWINDOW)
+        discard rwSetWindowPos(initHwnd, nil,
+                               mi.rcMonitor.left, mi.rcMonitor.top,
+                               mi.rcMonitor.right - mi.rcMonitor.left,
+                               mi.rcMonitor.bottom - mi.rcMonitor.top,
+                               RW_SWP_NOOWNERZORDER or RW_SWP_FRAMECHANGED)
 
   cast[Webview](state)
 
 proc webview_destroy*(w: Webview): cint {.exportc, cdecl, discardable.} =
   if w == nil: return WEBVIEW_ERROR_INVALID_ARGUMENT
   let state = cast[ptr RWebviewState](w)
+  # Stop background threads before freeing JS state
+  stopMixerThread()
+  stopAudioDecodeThread()
   # Free all Nim-held JS values so the GC list is empty before JS_FreeRuntime.
+  # Pending deferred image loads
+  for req in pendingImageLoads:
+    state.scriptCtx.freeValue(req.imgObj)
+  pendingImageLoads = @[]
+  # Pending deferred XHR requests
+  for req in pendingXhrRequests:
+    state.scriptCtx.freeValue(req.xhrObj)
+  pendingXhrRequests = @[]
+  # Pending deferred fetch requests
+  for req in pendingFetchRequests:
+    state.scriptCtx.freeValue(req.resolveFn)
+    state.scriptCtx.freeValue(req.rejectFn)
+  pendingFetchRequests = @[]
   # Unfired rAF callbacks
   for e in state.rafPending:
-    rw_JS_FreeValue(state.jsCtx, e.fn)
+    state.scriptCtx.freeValue(e.fn)
   state.rafPending = @[]
   # Pending setTimeout / setInterval callbacks
   for t in state.timers:
-    rw_JS_FreeValue(state.jsCtx, t.fn)
+    state.scriptCtx.freeValue(t.fn)
   state.timers = @[]
   # Canvas2D canvas element references (DupValue'd in jsCreateCanvas2D)
   for cs in canvas2dStates:
-    rw_JS_FreeValue(state.jsCtx, cs.canvasJsVal)
+    state.scriptCtx.freeValue(cs.canvasJsVal)
   canvas2dStates = @[]
+  # Audio source onended callbacks (DupValue'd in jsAudioSourceSetOnended)
+  for src in audioMixer.sources:
+    state.scriptCtx.freeValue(src.onendedCb)
+    state.scriptCtx.freeValue(src.onendedThis)
+  audioMixer.sources = @[]
+  # Free any pending input data for unprocessed decode requests.
+  # adLock is already deinitialized by stopAudioDecodeThread, so access directly
+  # (the worker thread is joined — no race condition).
+  for req in sdRequests:
+    if req.data != nil: dealloc(req.data)
+  sdRequests = @[]
+  if state.scriptCtx != nil: dealloc(state.scriptCtx)
   JS_FreeContext(state.jsCtx)
   JS_RunGC(state.rt)   # collect any JS objects with circular refs
   JS_FreeRuntime(state.rt)
@@ -613,8 +891,13 @@ proc webview_run_step*(w: Webview): cint {.exportc, cdecl, discardable.} =
       let shiftKey  = (modFlags and SDL_KMOD_SHIFT) != 0
       let (htmlKeyCode, htmlKey, htmlCode) = sdlToHtmlKey(sdlKey, scanCode, shiftKey)
       # F2 (scancode 59) toggles the native debug overlay — do not propagate to JS
+      # F12 (scancode 69) toggles the console window — do not propagate to JS
       if isDown and scanCode == 59:
         c2dShowOverlay = not c2dShowOverlay
+      elif isDown and scanCode == 69:
+        if rwConsoleHwnd != nil:
+          rwConsoleVisible = not rwConsoleVisible
+          discard rwShowWindow(rwConsoleHwnd, if rwConsoleVisible: 5 else: 0)
       else:
         let js = "__rw_dispatchEvent(document,'" & evType & "',{" &
                  "keyCode:" & $htmlKeyCode & "," &
@@ -673,9 +956,21 @@ proc webview_run_step*(w: Webview): cint {.exportc, cdecl, discardable.} =
     of SDL_EVENT_MOUSE_WHEEL:
       let wx = sdlEvWheelX(event)
       let wy = sdlEvWheelY(event)
+      # wheelDelta: positive = scroll-up (×120/notch); detail: negative = scroll-up
+      let wheelDelta   = int(wy * 120.0)
+      let wheelDetail  = int(-wy * 3.0)
       let js = "__rw_dispatchEvent(document,'wheel',{" &
                "deltaX:" & $wx & ",deltaY:" & $(-wy) & ",deltaZ:0," &
-               "deltaMode:0,clientX:0,clientY:0,pageX:0,pageY:0});"
+               "deltaMode:0,clientX:0,clientY:0,pageX:0,pageY:0});" &
+               # Legacy mousewheel (Chrome/IE style)
+               "__rw_dispatchEvent(document,'mousewheel',{" &
+               "wheelDelta:" & $wheelDelta & ",wheelDeltaX:0,wheelDeltaY:" & $wheelDelta & "," &
+               "deltaX:" & $wx & ",deltaY:" & $(-wy) & ",deltaZ:0," &
+               "deltaMode:0,clientX:0,clientY:0,pageX:0,pageY:0});" &
+               # Legacy DOMMouseScroll (Firefox style)
+               "__rw_dispatchEvent(document,'DOMMouseScroll',{" &
+               "detail:" & $wheelDetail & ",axis:2,VERTICAL_AXIS:2," &
+               "clientX:0,clientY:0,pageX:0,pageY:0});"
       evalDisp(js)
 
     of SDL_EVENT_WINDOW_RESIZED:
@@ -688,11 +983,51 @@ proc webview_run_step*(w: Webview): cint {.exportc, cdecl, discardable.} =
                "__rw_dispatchEvent(window,'resize',{});"
       evalDisp(js)
 
+    of SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_MOTION, SDL_EVENT_FINGER_UP:
+      # Map SDL3 touch finger events to Touch + Pointer events.
+      # SDL finger coordinates are normalized 0..1; scale to window pixels.
+      let fx    = sdlEvFingerX(event)
+      let fy    = sdlEvFingerY(event)
+      let fid   = sdlEvFingerID(event)
+      let fpres = sdlEvFingerPressure(event)
+      let cx    = int(fx * float32(state.width))
+      let cy    = int(fy * float32(state.height))
+      let isDown = event.typ == SDL_EVENT_FINGER_DOWN
+      let isUp   = event.typ == SDL_EVENT_FINGER_UP
+      let touchType  = if isDown: "touchstart" elif isUp: "touchend" else: "touchmove"
+      let ptrType    = if isDown: "pointerdown" elif isUp: "pointerup" else: "pointermove"
+      # Build a minimal Touch object and dispatch touch + pointer events.
+      # The touch object fields are what C2 actually reads (clientX/Y, identifier).
+      let touchObj = "{identifier:" & $fid &
+                     ",clientX:" & $cx & ",clientY:" & $cy &
+                     ",pageX:" & $cx & ",pageY:" & $cy &
+                     ",screenX:" & $cx & ",screenY:" & $cy &
+                     ",force:" & $fpres & "}"
+      let js = "(function(){" &
+               "var t=" & touchObj & ";" &
+               # Touch events (used by C2's legacy input path)
+               "__rw_dispatchEvent(document,'" & touchType & "',{" &
+               "touches:[t],changedTouches:[t],targetTouches:[t]," &
+               "clientX:" & $cx & ",clientY:" & $cy & "});" &
+               # Pointer events (used by C2's primary input path)
+               "__rw_dispatchEvent(document,'" & ptrType & "',{" &
+               "pointerId:" & $fid & ",pointerType:'touch'," &
+               "clientX:" & $cx & ",clientY:" & $cy & "," &
+               "pageX:" & $cx & ",pageY:" & $cy & "," &
+               "screenX:" & $cx & ",screenY:" & $cy & "," &
+               "pressure:" & $fpres & ",isPrimary:true,buttons:1});" &
+               "})();"
+      evalDisp(js)
+
     of SDL_EVENT_WINDOW_FOCUS_GAINED:
-      evalDisp("__rw_dispatchEvent(window,'focus',{});")
+      evalDisp("__rw_dispatchEvent(window,'focus',{});" &
+               "document.hidden=false;document.visibilityState='visible';" &
+               "__rw_dispatchEvent(document,'visibilitychange',{});")
 
     of SDL_EVENT_WINDOW_FOCUS_LOST:
-      evalDisp("__rw_dispatchEvent(window,'blur',{});__rw_dispatchEvent(document,'blur',{});")
+      evalDisp("__rw_dispatchEvent(window,'blur',{});__rw_dispatchEvent(document,'blur',{});" &
+               "document.hidden=true;document.visibilityState='hidden';" &
+               "__rw_dispatchEvent(document,'visibilitychange',{});")
 
     else: discard
 
@@ -704,11 +1039,26 @@ proc webview_run_step*(w: Webview): cint {.exportc, cdecl, discardable.} =
     c2dFpsDisplay = rwFpsFrames
     rwFpsFrames   = 0
     rwFpsLastMs   = nowMs
+  let frameT0 = SDL_GetTicks()
   dispatchTimers(state)
+  processXhrQueue(state)        # OPT-3: fire deferred XHR callbacks (before rAF, like browser)
+  processFetchQueue(state)      # OPT-4: fire deferred fetch callbacks
+  let tRaf0 = SDL_GetTicks()
   dispatchRaf(state)
-  presentAllCanvas2D(state.width, state.height)
-  mixAudioFrame()
+  let dtRaf = SDL_GetTicks() - tRaf0
+  processImageQueue(state)      # OPT-1+3: batch image decode (time-budgeted)
+  processStreamDecodeResults(state.scriptCtx)  # stbvorbis streaming chunks
+  processStreamBufferResults(state.scriptCtx)  # progressive decode: growing-buffer streaming
+  # Get actual pixel dimensions for the GL viewport (handles display scaling).
+  var physW = state.width
+  var physH = state.height
+  discard SDL_GetWindowSizeInPixels(state.sdlWindow, addr physW, addr physH)
+  presentAllCanvas2D(int(physW), int(physH))
+  processAudioOnended(state.scriptCtx)  # Fire onended JS callbacks (mixer thread queues them)
   discard SDL_GL_SwapWindow(state.sdlWindow)
+  let dtFrame = SDL_GetTicks() - frameT0
+  if dtFrame > 20 or dtRaf > 10:
+    stderr.writeLine("[perf] frame: " & $dtFrame & "ms (rAF=" & $dtRaf & "ms)")
 
   0  # still running
 
@@ -763,9 +1113,17 @@ proc webview_set_size*(w: Webview; width: cint; height: cint;
   state.height = height
   WEBVIEW_ERROR_OK
 
-proc webview_open_devtools*(w: Webview) {.exportc, cdecl.} = discard
+proc webview_open_devtools*(w: Webview) {.exportc, cdecl.} =
+  ## Toggle the debug console window visibility (F12).
+  when defined(windows):
+    if rwConsoleHwnd != nil:
+      rwConsoleVisible = not rwConsoleVisible
+      discard rwShowWindow(rwConsoleHwnd, if rwConsoleVisible: 5 else: 0)
 
-proc webview_get_saved_placement*(w: Webview; placement: pointer) {.exportc, cdecl.} = discard
+proc webview_get_saved_placement*(w: Webview; placement: pointer) {.exportc, cdecl.} =
+  if w == nil or placement == nil: return
+  let state = cast[ptr RWebviewState](w)
+  copyMem(placement, addr state.savedPlacement[0], state.savedPlacement.len)
 
 proc webview_set_virtual_host_name_to_folder_mapping*(w: Webview;
     hostName: cstring; folderPath: cstring; accessKind: cint)
@@ -819,6 +1177,7 @@ proc webview_navigate*(w: Webview; url: cstring): cint {.exportc, cdecl, discard
 
   # Set baseDir to the directory containing the HTML file.
   state.baseDir = filePath.parentDir()
+  state.navigateUrl = urlStr   # used by domPreamble to set window.location
 
   let htmlContent = readFile(filePath)
   navigateImpl(state, htmlContent, filePath)
@@ -885,7 +1244,7 @@ proc webview_return*(w: Webview; id: cstring; status: cint;
 
 
 
-when isMainModule:
+when isMainModule and not defined(rwebviewLib):
   # Usage: rwebview.exe [path-to-html]
   # Default: testmedia.html next to this source file.
   # Supports drag-and-drop (Windows sends the dropped file as argv[1]).

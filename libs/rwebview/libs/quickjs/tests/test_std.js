@@ -1,28 +1,10 @@
-#! (shebang test)
-import * as std from "std";
-import * as os from "os";
+import * as std from "qjs:std";
+import * as os from "qjs:os";
+import { assert } from  "./assert.js";
 
-function assert(actual, expected, message) {
-    if (arguments.length == 1)
-        expected = true;
+const isWin = os.platform === 'win32';
+const isCygwin = os.platform === 'cygwin';
 
-    if (Object.is(actual, expected))
-        return;
-
-    if (actual !== null && expected !== null
-    &&  typeof actual == 'object' && typeof expected == 'object'
-    &&  actual.toString() === expected.toString())
-        return;
-
-    throw Error("assertion failed: got |" + actual + "|" +
-                ", expected |" + expected + "|" +
-                (message ? " (" + message + ")" : ""));
-}
-
-// load more elaborate version of assert if available
-try { std.loadScript("test_assert.js"); } catch(e) {}
-
-/*----------------*/
 
 function test_printf()
 {
@@ -37,27 +19,31 @@ function test_printf()
 
 function test_file1()
 {
-    var f, len, str, size, buf, ret, i, str1;
+    var f, len, str, size, buf, ret, i, str1, ab;
 
     f = std.tmpfile();
     str = "hello world\n";
     f.puts(str);
 
     f.seek(0, std.SEEK_SET);
+    ab = f.readAsArrayBuffer();
+    assert([...new Uint8Array(ab)], str.split("").map(c => c.charCodeAt(0)));
+
+    f.seek(0, std.SEEK_SET);
     str1 = f.readAsString();
-    assert(str1 === str);
+    assert(str1, str);
 
     f.seek(0, std.SEEK_END);
     size = f.tell();
-    assert(size === str.length);
+    assert(size, str.length);
 
     f.seek(0, std.SEEK_SET);
 
     buf = new Uint8Array(size);
     ret = f.read(buf.buffer, 0, size);
-    assert(ret === size);
+    assert(ret, size);
     for(i = 0; i < size; i++)
-        assert(buf[i] === str.charCodeAt(i));
+        assert(buf[i], str.charCodeAt(i));
 
     f.close();
 }
@@ -72,9 +58,9 @@ function test_file2()
         f.putByte(str.charCodeAt(i));
     f.seek(0, std.SEEK_SET);
     for(i = 0; i < size; i++) {
-        assert(str.charCodeAt(i) === f.getByte());
+        assert(str.charCodeAt(i), f.getByte());
     }
-    assert(f.getByte() === -1);
+    assert(f.getByte(), -1);
     f.close();
 }
 
@@ -95,11 +81,11 @@ function test_getline()
         line = f.getline();
         if (line === null)
             break;
-        assert(line == lines[line_count]);
+        assert(line, lines[line_count]);
         line_count++;
     }
     assert(f.eof());
-    assert(line_count === lines.length);
+    assert(line_count, lines.length);
 
     f.close();
 }
@@ -107,17 +93,30 @@ function test_getline()
 function test_popen()
 {
     var str, f, fname = "tmp_file.txt";
-    var content = "hello world";
+    var ta, content = "hello world";
+    var cmd = isWin ? "type" : "cat";
 
-    f = std.open(fname, "w");
-    f.puts(content);
-    f.close();
-
-    /* test loadFile */
+    ta = new Uint8Array([...content].map(c => c.charCodeAt(0)));
+    std.writeFile(fname, ta);
+    assert(std.loadFile(fname), content);
+    std.writeFile(fname, ta.buffer);
+    assert(std.loadFile(fname), content);
+    std.writeFile(fname, content);
     assert(std.loadFile(fname), content);
 
-    /* execute the 'cat' shell command */
-    f = std.popen("cat " + fname, "r");
+    // popen pipe is unidirectional so mode should
+    // be either read or write but not both
+    let caught = false;
+    try {
+        std.popen(cmd, "rw");
+    } catch (e) {
+        assert(/invalid file mode/.test(e.message));
+        caught = true;
+    }
+    assert(caught);
+
+    /* execute shell command */
+    f = std.popen(cmd + " " + fname, "r");
     str = f.readAsString();
     f.close();
 
@@ -126,39 +125,12 @@ function test_popen()
     os.remove(fname);
 }
 
-function test_ext_json()
-{
-    var expected, input, obj;
-    expected = '{"x":false,"y":true,"z2":null,"a":[1,8,160],"b":"abc\\u000bd","s":"str"}';
-    input = `{ "x":false, /*comments are allowed */
-               "y":true,  // also a comment
-               z2:null, // unquoted property names
-               "a":[+1,0o10,0xa0,], // plus prefix, octal, hexadecimal
-               "b": "ab\
-c\\vd", // multi-line strings, '\v' escape
-               "s":'str',} // trailing comma in objects and arrays, single quoted string
-            `;
-    obj = std.parseExtJSON(input);
-    assert(JSON.stringify(obj), expected);
-
-    obj = std.parseExtJSON('[Infinity, +Infinity, -Infinity, NaN, +NaN, -NaN, .1, -.2]');
-    assert(obj[0], Infinity);
-    assert(obj[1], Infinity);
-    assert(obj[2], -Infinity);
-    assert(obj[3], NaN);
-    assert(obj[4], NaN);
-    assert(obj[5], NaN);
-    assert(obj[6], 0.1);
-    assert(obj[7], -0.2);
-}
-
 function test_os()
 {
     var fd, fpath, fname, fdir, buf, buf2, i, files, err, fdate, st, link_path;
 
-    const stdinIsTTY = !os.exec(["/bin/sh", "-c", "test -t 0"], { usePath: false });
-
-    assert(os.isatty(0), stdinIsTTY, `isatty(STDIN)`);
+    // XXX(bnoordhuis) disabled because stdio is not a tty on CI
+    //assert(os.isatty(0));
 
     fdir = "test_tmp_dir";
     fname = "tmp_file.txt";
@@ -170,7 +142,7 @@ function test_os()
     os.remove(fdir);
 
     err = os.mkdir(fdir, 0o755);
-    assert(err === 0);
+    assert(err, 0);
 
     fd = os.open(fpath, os.O_RDWR | os.O_CREAT | os.O_TRUNC);
     assert(fd >= 0);
@@ -178,26 +150,29 @@ function test_os()
     buf = new Uint8Array(10);
     for(i = 0; i < buf.length; i++)
         buf[i] = i;
-    assert(os.write(fd, buf.buffer, 0, buf.length) === buf.length);
+    assert(os.write(fd, buf.buffer, 0, buf.length), buf.length);
 
-    assert(os.seek(fd, 0, std.SEEK_SET) === 0);
+    assert(os.seek(fd, 0, std.SEEK_SET), 0);
     buf2 = new Uint8Array(buf.length);
-    assert(os.read(fd, buf2.buffer, 0, buf2.length) === buf2.length);
+    assert(os.read(fd, buf2.buffer, 0, buf2.length), buf2.length);
 
     for(i = 0; i < buf.length; i++)
         assert(buf[i] == buf2[i]);
 
     if (typeof BigInt !== "undefined") {
         assert(os.seek(fd, BigInt(6), std.SEEK_SET), BigInt(6));
-        assert(os.read(fd, buf2.buffer, 0, 1) === 1);
+        assert(os.read(fd, buf2.buffer, 0, 1), 1);
         assert(buf[6] == buf2[0]);
     }
 
-    assert(os.close(fd) === 0);
+    assert(os.close(fd), 0);
 
     [files, err] = os.readdir(fdir);
     assert(err, 0);
-    assert(files.indexOf(fname) >= 0);
+    assert(files.length >= 3);
+    assert(files.includes(fname));
+    assert(files.includes("."));
+    assert(files.includes(".."));
 
     fdate = 10000;
 
@@ -209,18 +184,20 @@ function test_os()
     assert(st.mode & os.S_IFMT, os.S_IFREG);
     assert(st.mtime, fdate);
 
-    err = os.symlink(fname, link_path);
-    assert(err === 0);
+    if (!isWin) {
+        err = os.symlink(fname, link_path);
+        assert(err, 0);
 
-    [st, err] = os.lstat(link_path);
-    assert(err, 0);
-    assert(st.mode & os.S_IFMT, os.S_IFLNK);
+        [st, err] = os.lstat(link_path);
+        assert(err, 0);
+        assert(st.mode & os.S_IFMT, os.S_IFLNK);
 
-    [buf, err] = os.readlink(link_path);
-    assert(err, 0);
-    assert(buf, fname);
+        [buf, err] = os.readlink(link_path);
+        assert(err, 0);
+        assert(buf, fname);
 
-    assert(os.remove(link_path) === 0);
+        assert(os.remove(link_path) === 0);
+    }
 
     [buf, err] = os.getcwd();
     assert(err, 0);
@@ -236,6 +213,32 @@ function test_os()
     assert(fd < 0);
 
     assert(os.remove(fdir) === 0);
+
+    if (!isWin) {
+        [fdir, err] = os.mkdtemp();
+        assert(err, 0);
+        assert(fdir.startsWith("tmp"));
+        assert(fdir.length, 9);
+
+        [fpath, fd] = os.mkstemp(`${fdir}/XXXXXX`);
+        assert(fdir.startsWith(`${fdir}`));
+        assert(fd >= 0);
+
+        const f = std.fdopen(fd, "w+");
+        f.write("xyzzy");
+        f.flush();
+        const b = new Uint8Array(5);
+        f.seek(0, std.SEEK_SET);
+        assert(5, f.read(b.buffer));
+        const s = [...b].map(c => String.fromCharCode(c)).join("");
+        assert(s, "xyzzy");
+        f.seek(0, std.SEEK_SET);
+        assert(0, f.read(b.buffer, 5, 42));
+        f.close();
+
+        assert(os.remove(fpath), 0);
+        assert(os.remove(fdir), 0);
+    }
 }
 
 function test_os_exec()
@@ -270,11 +273,23 @@ function test_os_exec()
     os.kill(pid, os.SIGTERM);
     [ret, status] = os.waitpid(pid, 0);
     assert(ret, pid);
-    assert(status !== 0, true, `expect nonzero exit code (got ${status})`);
-    assert(status & 0x7f, os.SIGTERM);
+    // Flaky on cygwin for unclear reasons, see
+    // https://github.com/quickjs-ng/quickjs/issues/184
+    if (!isCygwin) {
+        assert(status & 0x7f, os.SIGTERM);
+    }
 }
 
-function test_timer()
+function test_interval()
+{
+    var t = os.setInterval(f, 1);
+    function f() {
+        if (++f.count === 3) os.clearInterval(t);
+    }
+    f.count = 0;
+}
+
+function test_timeout()
 {
     var th, i;
 
@@ -286,40 +301,30 @@ function test_timer()
         os.clearTimeout(th[i]);
 }
 
-/* test closure variable handling when freeing asynchronous
-   function */
-function test_async_gc()
+function test_timeout_order()
 {
-    (async function run () {
-        let obj = {}
-
-        let done = () => {
-            obj
-            std.gc();
-        }
-
-        Promise.resolve().then(done)
-
-        const p = new Promise(() => {})
-
-        await p
-    })();
+    var s = "";
+    os.setTimeout(a, 0);
+    os.setTimeout(b, 100);
+    os.setTimeout(d, 700);
+    function a() { s += "a"; os.setTimeout(c, 300); }
+    function b() { s += "b"; }
+    function c() { s += "c"; }
+    function d() { assert(s, "abc"); } // not "acb"
 }
 
-/* check that the promise async rejection handler is not invoked when
-   the rejection is handled not too late after the promise
-   rejection. */
-function test_async_promise_rejection()
+function test_stdio_close()
 {
-    var counter = 0;
-    var p1, p2, p3;
-    p1 = Promise.reject();
-    p2 = Promise.reject();
-    p3 = Promise.resolve();
-    p1.catch(() => counter++);
-    p2.catch(() => counter++);
-    p3.then(() => counter++)
-    os.setTimeout(() => { assert(counter, 3) }, 10);
+    for (const f of [std.in, std.out, std.err]) {
+        let caught = false;
+        try {
+            f.close();
+        } catch (e) {
+            assert(/cannot close stdio/.test(e.message));
+            caught = true;
+        }
+        assert(caught);
+    }
 }
 
 test_printf();
@@ -328,9 +333,8 @@ test_file2();
 test_getline();
 test_popen();
 test_os();
-test_os_exec();
-test_timer();
-test_ext_json();
-test_async_gc();
-test_async_promise_rejection();
-
+!isWin && test_os_exec();
+test_interval();
+test_timeout();
+test_timeout_order();
+test_stdio_close();

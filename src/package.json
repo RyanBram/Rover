@@ -2,10 +2,14 @@
   "name": "rover-app",
   "main": "index.html",
   "httpServer": false,
+  "renderer": "webgl",
+  "interpreter": "mquickjs",
   "window": {
     "title": "Rover App",
     "icon": "icon/icon.png",
     "width": 960,
-    "height": 720
+    "height": 720,
+    "maximize": false,
+    "fullscreen": false
   }
 }

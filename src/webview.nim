@@ -1,10 +1,55 @@
-## Source: https://github.com/neroist/webview
-## Wrapper for `Webview <https://github.com/webview/webview>`_.
-##
-## Compile with ``-d:rwebview`` to use the custom SDL3+QuickJS+Lexbor backend
-## (``libs/rwebview/rwebview.nim``) instead of the OS-native webview backend
-## (``libs/webview/webview.cc``).  All ``importc`` bindings below remain the
-## same regardless of backend -- both export the identical ``webview_*`` C ABI.
+# =============================================================================
+# webview.nim
+# Nim bindings for the webview C ABI — Edge WebView2 / rwebview backends
+# =============================================================================
+#
+# Author    : Ryan Bramantya  (extended from neroist/webview)
+# Copyright : Copyright (c) 2026 Ryan Bramantya
+# License   : Apache License 2.0
+# Website   : https://github.com/RyanBram/Rover
+# Original  : https://github.com/neroist/webview
+#
+# -----------------------------------------------------------------------------
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# -----------------------------------------------------------------------------
+#
+# Description:
+#   Nim wrapper providing typed access to the webview C ABI:
+#   webview_create, webview_navigate, webview_bind, webview_eval, etc.
+#
+#   Backend is selected at compile time via -d flags:
+#   - default (no flag)    — compiles libs/webview/webview.cc; links Edge
+#                            WebView2 (-DWEBVIEW_EDGE + WebView2 SDK).
+#   - -d:rwebview          — imports libs/rwebview/rwebview.nim which exports
+#                            the identical C ABI via SDL3 + QuickJS + Lexbor.
+#   - -d:useWebviewDll     — loads webview.dll at runtime (dynlib).
+#   - -d:useWebviewStaticLib — links against a pre-built libwebview.a.
+#
+#   All importc proc declarations are backend-agnostic. The {.pragma: webview.}
+#   resolves to {.discardable.} in all paths; the dynlib branch additionally
+#   carries {.dynlib: webviewDll.}.
+#
+# Documentation:
+#   See [Documentation] section at the bottom of this file.
+#
+# -----------------------------------------------------------------------------
+#
+# Included by:
+#   - src/rover.nim        (main application)
+#
+# =============================================================================
 
 import std/json
 import std/os
@@ -18,6 +63,7 @@ const
 when defined(rwebview):
   ## rwebview backend: import rwebview.nim which exports all webview_* symbols
   ## with {.exportc, cdecl.}. Nim compiles it to C → .o and links it in.
+  ## NOTE: rgss.dll mode uses runtime LoadLibrary instead (see rgss_engine.nim).
   import ../libs/rwebview/rwebview
   {.pragma: webview, discardable.}
 
@@ -487,3 +533,90 @@ proc newWebview*(debug: bool = isDebug; window: pointer = nil; width: int = 640;
   create(cint debug, window, cint width, cint height, cint initialState)
 
 export JsonNode
+
+
+# =============================================================================
+# [Documentation]
+# =============================================================================
+#
+# Compile-time Backend Selection
+# --------------------------------
+#   Condition                     Backend
+#   ────────────────────────────  ─────────────────────────────────────────
+#   -d:rwebview                   rwebview.nim  (SDL3 + QuickJS + Lexbor)
+#   -d:useWebviewDll              runtime webview.dll via dynlib
+#   -d:useWebviewStaticLib        pre-built libwebview.a
+#   (none of the above)           compile webview.cc  (Edge WebView2)
+#
+#   Only the default path (webview.cc) is used by rover.exe production builds.
+#   -d:rwebview is activated automatically inside rwebview.nim's own imports.
+#
+# WebView2 Build Details  (default path)
+# ----------------------------------------
+#   C++ source  : libs/webview/webview.cc
+#   Compile flags: -DWEBVIEW_STATIC  -DWEBVIEW_EDGE  -std=c++17
+#   Header path : libs/webview2/  (WebView2 NuGet SDK headers)
+#   System libs : -ladvapi32 -lole32 -lshell32 -lshlwapi
+#                 -luser32 -lversion -lstdc++  -static -lpthread
+#   Min runtime : Windows 10 + WebView2 Runtime  (or Fixed Version Runtime)
+#
+# webview_* C ABI  — Function Reference
+# ──────────────────────────────────────
+#   webview_create(debug, window, w, h, initialState) → Webview
+#     Allocates a Webview. initialState: 0=normal, 1=maximized, 2=fullscreen.
+#     Returns nil on failure (WebView2 not installed, unsupported OS, etc.).
+#
+#   webview_destroy(w)
+#     Frees all resources and closes the OS window. Always call before exit.
+#
+#   webview_run(w)
+#     Blocks until the window is closed via webview_terminate() or OS close.
+#     NOT used by rover.nim — rover drives its own PeekMessage loop.
+#
+#   webview_run_step(w) → cint
+#     Process one event frame; returns 1 when a close is requested.
+#     Exported only by rwebview.nim (SDL backend). NOT present in webview.cc.
+#
+#   webview_terminate(w)
+#     Requests the event loop to stop (thread-safe).
+#
+#   webview_navigate(w, url)
+#     Navigate to a URL. Supports http://, https://, file://, data:.
+#
+#   webview_set_html(w, html)
+#     Load a raw HTML string directly from memory.
+#
+#   webview_init(w, js)
+#     Inject JS to execute on every page load, before window.onload.
+#
+#   webview_eval(w, js)
+#     Evaluate JS in the currently loaded page (fire-and-forget).
+#
+#   webview_set_title(w, title)          — Set OS window title.
+#   webview_set_size(w, w, h, hint)      — Resize; hint: 0=None 1=Min 2=Max 3=Fixed.
+#   webview_get_window(w) → pointer      — Returns the HWND on Windows.
+#   webview_get_native_handle(w, kind)   — HWND / browser HWND / ICoreWebView2Controller.
+#
+#   webview_bind(w, name, fn, arg)
+#     Expose a C callback as a global async JS function.
+#     The JS call returns a Promise; resolve it with webview_return().
+#
+#   webview_unbind(w, name)
+#     Remove a previously registered JS→C binding.
+#
+#   webview_return(w, id, status, result)
+#     Resolve the Promise created by a webview_bind call.
+#     status=0 → resolve(result);  status≠0 → reject(result).
+#
+#   webview_set_virtual_host_name_to_folder_mapping(w, host, path, accessKind)
+#     Map a virtual hostname to a local folder (WebView2 Custom Scheme).
+#     accessKind: 0=Deny  1=Allow  2=DenyCors.
+#
+#   webview_get_saved_placement(w, placement)
+#     Copy the pre-fullscreen WINDOWPLACEMENT into *placement.
+#     Only meaningful when the window was opened with initialState=2.
+#
+#   webview_open_devtools(w)
+#     Open the browser DevTools panel (F12 equivalent).
+#
+# =============================================================================
