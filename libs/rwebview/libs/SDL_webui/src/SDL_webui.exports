@@ -1,0 +1,71 @@
+# SDL3_webui.dll exports
+# Format follows SDL_sound convention: one symbol per line, prefixed with _
+# Generated from src/SDL_webui.c public functions (swu_* API)
+#
+# Context lifecycle
+_swu_init
+_swu_destroy
+# Frame lifecycle
+_swu_begin
+_swu_layout
+_swu_render_backgrounds
+_swu_end
+# HTML tag functions
+_swu_div
+_swu_span
+_swu_close
+_swu_p
+_swu_label
+_swu_button
+_swu_input
+_swu_checkbox
+_swu_range
+_swu_hr
+# CSS property setters — box model
+_swu_css_width
+_swu_css_height
+_swu_css_margin
+_swu_css_margin_top
+_swu_css_margin_right
+_swu_css_margin_bottom
+_swu_css_margin_left
+_swu_css_padding
+_swu_css_padding_top
+_swu_css_padding_right
+_swu_css_padding_bottom
+_swu_css_padding_left
+_swu_css_position
+_swu_css_top
+_swu_css_right
+_swu_css_bottom
+_swu_css_left
+# CSS property setters — flexbox
+_swu_css_display
+_swu_css_flex_direction
+_swu_css_flex_wrap
+_swu_css_flex_grow
+_swu_css_flex_shrink
+_swu_css_flex_basis
+_swu_css_justify_content
+_swu_css_align_items
+_swu_css_align_self
+_swu_css_align_content
+_swu_css_order
+# CSS property setters — visual
+_swu_css_color
+_swu_css_background_color
+_swu_css_border_color
+_swu_css_border_width
+_swu_css_overflow
+_swu_css_text_align
+# Query
+_swu_get_rect
+_swu_place
+_swu_clip_push
+_swu_clip_pop
+_swu_get_mu
+# Legacy API (Phase 3a compat)
+_swu_open
+_swu_slot
+_swu_open_bg
+_swu_divider

@@ -1,16 +1,87 @@
-﻿# ===========================================================================
-# Phase 3 - DOM preamble (loaded from dom_preamble.js via staticRead)
-# ===========================================================================
+# =============================================================================
+# rwebview_dom.nim
+# DOM preamble representation
+# =============================================================================
+#
+# Author    : Ryan Bramantya
+# Copyright : Copyright (c) 2026 Ryan Bramantya
+# License   : Apache License 2.0
+# Website   : https://github.com/RyanBram/Rover
+#
+# -----------------------------------------------------------------------------
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# -----------------------------------------------------------------------------
+#
+# Description:
+#   DOM preamble (loaded from dom_preamble.js via staticRead).
+#
+# Documentation:
+#   See [Documentation] section at the bottom of this file.
+#
+# -----------------------------------------------------------------------------
+#
+# Included by:
+#   - rgss/rgss_api            # ScriptCtx, ScriptValue
+#
+# Used by:
+#   - rwebview.nim             # included after rwebview_html.nim
+#
+# =============================================================================
 
 const domPreambleJs = staticRead("dom_preamble.js")
 
-proc domPreamble(w, h: cint): string =
+proc domPreamble(w, h: cint; navigateUrl: string = "";
+                 screenW: cint = 0; screenH: cint = 0): string =
   ## Return the JS source that installs minimal window/document stubs.
-  ## Loaded from dom_preamble.js at compile time; __CANVAS_W__ / __CANVAS_H__
-  ## are substituted at runtime with the actual pixel dimensions.
+  ## Loaded from dom_preamble.js at compile time; placeholders are substituted
+  ## at runtime with actual pixel dimensions and the navigate URL so that
+  ## window.location reflects the real URL (required by polyfill.js to detect
+  ## VirtualHost mode vs HTTP-server mode and to read package.json correctly).
+  ## screenW/screenH are the actual monitor resolution for screen.width/height.
+  var href     = navigateUrl
+  var hostname = "localhost"
+  var protocol = "file:"
+  var origin   = "file://"
+  var pathname = "/"
+  if navigateUrl.startsWith("http://") or navigateUrl.startsWith("https://"):
+    let noScheme = navigateUrl[navigateUrl.find("://") + 3 .. ^1]
+    let slashPos = noScheme.find('/')
+    if slashPos >= 0:
+      hostname = noScheme[0 ..< slashPos]
+      pathname = noScheme[slashPos .. ^1]
+    else:
+      hostname = noScheme
+      pathname = "/"
+    if navigateUrl.startsWith("https://"):
+      protocol = "https:"
+      origin   = "https://" & hostname
+    else:
+      protocol = "http:"
+      origin   = "http://" & hostname
+  let actualScreenW = if screenW > 0: screenW else: w
+  let actualScreenH = if screenH > 0: screenH else: h
   domPreambleJs
-    .replace("__CANVAS_W__", $w)
-    .replace("__CANVAS_H__", $h)
+    .replace("__CANVAS_W__",          $w)
+    .replace("__CANVAS_H__",          $h)
+    .replace("__SCREEN_W__",          $actualScreenW)
+    .replace("__SCREEN_H__",          $actualScreenH)
+    .replace("__LOCATION_HREF__",     href)
+    .replace("__LOCATION_PATHNAME__", pathname)
+    .replace("__LOCATION_HOSTNAME__", hostname)
+    .replace("__LOCATION_PROTOCOL__", protocol)
+    .replace("__LOCATION_ORIGIN__",   origin)
 
 # ===========================================================================
 # Phase 3 — Native JS bindings installed by bindDom
@@ -22,159 +93,149 @@ proc domPreamble(w, h: cint): string =
 # For a single-window runtime this is fine.
 var gState {.global.}: ptr RWebviewState = nil
 
-proc jsGetTicks(ctx: ptr JSContext; thisVal: JSValue;
-                argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGetTicks(ctx: ptr ScriptCtx; this: ScriptValue;
+                args: openArray[ScriptValue]): ScriptValue =
   ## __rw_getTicksMs() → number   (milliseconds since SDL init)
-  rw_JS_NewFloat64(ctx, float64(SDL_GetTicks()))
+  ctx.newFloat(float64(SDL_GetTicks()))
 
-proc jsRequestAnimationFrame(ctx: ptr JSContext; thisVal: JSValue;
-                              argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsRequestAnimationFrame(ctx: ptr ScriptCtx; this: ScriptValue;
+                              args: openArray[ScriptValue]): ScriptValue =
   ## requestAnimationFrame(callback) → id  (int)
-  if argc < 1: return rw_JS_NewInt32(ctx, 0)
-  let fn = cast[ptr JSValue](argv)[]
-  if JS_IsFunction(ctx, fn) == 0: return rw_JS_NewInt32(ctx, 0)
+  if args.len < 1: return ctx.newInt(0)
+  let fn = args[0]
+  if not ctx.isFunction(fn): return ctx.newInt(0)
   let state = gState
-  if state == nil: return rw_JS_NewInt32(ctx, 0)
+  if state == nil: return ctx.newInt(0)
   let id = state.nextTimerId
   inc state.nextTimerId
-  state.rafPending.add(RAfEntry(id: id, fn: rw_JS_DupValue(ctx, fn)))
-  rw_JS_NewInt32(ctx, int32(id))
+  let duped = ctx.dupValue(fn)
+  state.rafPending.add(RAfEntry(id: id, fn: duped))
+  ctx.newInt(int32(id))
 
-proc jsCancelAnimationFrame(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc < 1 or gState == nil: return rw_JS_Undefined()
-  var id: int32
-  discard JS_ToInt32(ctx, addr id, cast[ptr JSValue](argv)[])
+proc jsCancelAnimationFrame(ctx: ptr ScriptCtx; this: ScriptValue;
+                             args: openArray[ScriptValue]): ScriptValue =
+  if args.len < 1 or gState == nil: return ctx.newUndefined()
+  let id = int(ctx.toInt32(args[0]))
   let state = gState
   for i in 0..<state.rafPending.len:
-    if state.rafPending[i].id == int(id):
-      rw_JS_FreeValue(ctx, state.rafPending[i].fn)
+    if state.rafPending[i].id == id:
+      ctx.freeValue(state.rafPending[i].fn)
       state.rafPending.delete(i)
       break
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsSetTimeout(ctx: ptr JSContext; thisVal: JSValue;
-                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc < 1 or gState == nil: return rw_JS_NewInt32(ctx, 0)
-  let fn = cast[ptr JSValue](cast[uint](argv))[]
-  if JS_IsFunction(ctx, fn) == 0: return rw_JS_NewInt32(ctx, 0)
+proc jsSetTimeout(ctx: ptr ScriptCtx; this: ScriptValue;
+                  args: openArray[ScriptValue]): ScriptValue =
+  if args.len < 1 or gState == nil: return ctx.newInt(0)
+  let fn = args[0]
+  if not ctx.isFunction(fn): return ctx.newInt(0)
   var ms: int32 = 0
-  if argc >= 2:
-    discard JS_ToInt32(ctx, addr ms, cast[ptr JSValue](cast[uint](argv) + uint(sizeof(JSValue)))[])
+  if args.len >= 2:
+    ms = ctx.toInt32(args[1])
   if ms < 0: ms = 0
   let state = gState
   let id = state.nextTimerId
   inc state.nextTimerId
   state.timers.add(TimerEntry(
-    id: id, fn: rw_JS_DupValue(ctx, fn),
+    id: id, fn: ctx.dupValue(fn),
     fireAt: SDL_GetTicks() + uint64(ms),
     interval: 0, active: true))
-  rw_JS_NewInt32(ctx, int32(id))
+  ctx.newInt(int32(id))
 
-proc jsSetInterval(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc < 1 or gState == nil: return rw_JS_NewInt32(ctx, 0)
-  let fn = cast[ptr JSValue](cast[uint](argv))[]
-  if JS_IsFunction(ctx, fn) == 0: return rw_JS_NewInt32(ctx, 0)
+proc jsSetInterval(ctx: ptr ScriptCtx; this: ScriptValue;
+                   args: openArray[ScriptValue]): ScriptValue =
+  if args.len < 1 or gState == nil: return ctx.newInt(0)
+  let fn = args[0]
+  if not ctx.isFunction(fn): return ctx.newInt(0)
   var ms: int32 = 0
-  if argc >= 2:
-    discard JS_ToInt32(ctx, addr ms, cast[ptr JSValue](cast[uint](argv) + uint(sizeof(JSValue)))[])
+  if args.len >= 2:
+    ms = ctx.toInt32(args[1])
   if ms <= 0: ms = 1
   let state = gState
   let id = state.nextTimerId
   inc state.nextTimerId
   state.timers.add(TimerEntry(
-    id: id, fn: rw_JS_DupValue(ctx, fn),
+    id: id, fn: ctx.dupValue(fn),
     fireAt: SDL_GetTicks() + uint64(ms),
     interval: uint64(ms), active: true))
-  rw_JS_NewInt32(ctx, int32(id))
+  ctx.newInt(int32(id))
 
-proc jsClearTimer(ctx: ptr JSContext; thisVal: JSValue;
-                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc < 1 or gState == nil: return rw_JS_Undefined()
-  var id: int32
-  discard JS_ToInt32(ctx, addr id, cast[ptr JSValue](argv)[])
+proc jsClearTimer(ctx: ptr ScriptCtx; this: ScriptValue;
+                  args: openArray[ScriptValue]): ScriptValue =
+  if args.len < 1 or gState == nil: return ctx.newUndefined()
+  let id = int(ctx.toInt32(args[0]))
   for t in gState.timers.mitems:
-    if t.id == int(id) and t.active:
+    if t.id == id and t.active:
       t.active = false
-      # Do NOT free t.fn here — dispatchTimers owns lifetime and will free it
-      # when it sweeps inactive entries.  Freeing here causes use-after-free.
       break
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsLoadImage(ctx: ptr JSContext; thisVal: JSValue;
-                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsLoadImage(ctx: ptr ScriptCtx; this: ScriptValue;
+                 args: openArray[ScriptValue]): ScriptValue =
   ## __rw_loadImage(imgObj, src) — stub: immediately fires onload with size 1×1.
   ## A real implementation would load via SDL_image and set naturalWidth/Height.
-  if argc < 1: return rw_JS_Undefined()
-  let imgObj = cast[ptr JSValue](argv)[]
+  if args.len < 1: return ctx.newUndefined()
+  let imgObj = args[0]
   # Mark complete
-  discard JS_SetPropertyStr(ctx, imgObj, "complete",      rw_JS_True())
-  discard JS_SetPropertyStr(ctx, imgObj, "naturalWidth",  rw_JS_NewInt32(ctx, 1))
-  discard JS_SetPropertyStr(ctx, imgObj, "naturalHeight", rw_JS_NewInt32(ctx, 1))
-  discard JS_SetPropertyStr(ctx, imgObj, "width",         rw_JS_NewInt32(ctx, 1))
-  discard JS_SetPropertyStr(ctx, imgObj, "height",        rw_JS_NewInt32(ctx, 1))
+  ctx.setPropSteal(imgObj, "complete",      ctx.newBool(true))
+  ctx.setPropSteal(imgObj, "naturalWidth",  ctx.newInt(1))
+  ctx.setPropSteal(imgObj, "naturalHeight", ctx.newInt(1))
+  ctx.setPropSteal(imgObj, "width",         ctx.newInt(1))
+  ctx.setPropSteal(imgObj, "height",        ctx.newInt(1))
   # Fire load event via dispatchEvent (covers both addEventListener and onload)
-  let dispFn = JS_GetPropertyStr(ctx, imgObj, "dispatchEvent")
-  if JS_IsFunction(ctx, dispFn) != 0:
-    let evtObj = JS_NewObject(ctx)
-    discard JS_SetPropertyStr(ctx, evtObj, "type", rw_JS_NewString(ctx, "load"))
-    var ea = evtObj
-    let r = JS_Call(ctx, dispFn, imgObj, 1, addr ea)
-    discard jsCheck(ctx, r, "Image.dispatchEvent(load)")
-    rw_JS_FreeValue(ctx, r)
-    rw_JS_FreeValue(ctx, evtObj)
+  let dispFn = ctx.getProp(imgObj, "dispatchEvent")
+  if ctx.isFunction(dispFn):
+    let evtObj = ctx.newObject()
+    ctx.setPropSteal(evtObj, "type", ctx.newString("load"))
+    let r = ctx.callFunction1(dispFn, imgObj, evtObj)
+    discard ctx.checkException(r, "Image.dispatchEvent(load)")
+    ctx.freeValue(evtObj)
   else:
-    let onload = JS_GetPropertyStr(ctx, imgObj, "onload")
-    if JS_IsFunction(ctx, onload) != 0:
-      let r = JS_Call(ctx, onload, imgObj, 0, nil)
-      discard jsCheck(ctx, r, "Image.onload")
-      rw_JS_FreeValue(ctx, r)
-    rw_JS_FreeValue(ctx, onload)
-  rw_JS_FreeValue(ctx, dispFn)
-  rw_JS_Undefined()
+    let onload = ctx.getProp(imgObj, "onload")
+    if ctx.isFunction(onload):
+      let r = ctx.callFunction0(onload, imgObj)
+      discard ctx.checkException(r, "Image.onload")
+    ctx.freeValue(onload)
+  ctx.freeValue(dispFn)
+  ctx.newUndefined()
 
 proc bindDom(state: ptr RWebviewState) =
-  ## Install native C functions into the QuickJS global object.
+  ## Install native DOM functions via RGSS ScriptCtx.
   gState = state
-  let ctx    = state.jsCtx
-  let global = JS_GetGlobalObject(ctx)
-  let winObj = JS_GetPropertyStr(ctx, global, "window")
+  let ctx = state.scriptCtx
 
-  template installFn(obj: JSValue; name: cstring; fn: JSCFunction; nargs: cint) =
-    let f = JS_NewCFunction(ctx, fn, name, nargs)
-    discard JS_SetPropertyStr(ctx, obj, name, f)
-    # Also install on global so bare `setTimeout(...)` works.
-    let g2 = JS_NewCFunction(ctx, fn, name, nargs)
-    discard JS_SetPropertyStr(ctx, global, name, g2)
+  # performance.now — installed on window.performance + global performance
+  # We use ctx.eval to set up the property chain since performance.now
+  # must be an object method, not a global function.
+  ctx.bindGlobal("__rw_getTicksMs", jsGetTicks, 0)
 
-  # performance.now native
-  let perfObj = JS_GetPropertyStr(ctx, winObj, "performance")
-  let nowFn   = JS_NewCFunction(ctx, jsGetTicks, "now", 0)
-  discard JS_SetPropertyStr(ctx, perfObj, "now", nowFn)
-  # Also update the global performance.now
-  let gPerfObj = JS_GetPropertyStr(ctx, global, "performance")
-  let nowFn2   = JS_NewCFunction(ctx, jsGetTicks, "now", 0)
-  discard JS_SetPropertyStr(ctx, gPerfObj, "now", nowFn2)
-  rw_JS_FreeValue(ctx, perfObj)
-  rw_JS_FreeValue(ctx, gPerfObj)
+  # rAF / timer natives — these get installed on both window.* and global
+  ctx.bindGlobal("requestAnimationFrame",  jsRequestAnimationFrame, 1)
+  ctx.bindGlobal("cancelAnimationFrame",   jsCancelAnimationFrame,  1)
+  ctx.bindGlobal("setTimeout",             jsSetTimeout,            2)
+  ctx.bindGlobal("setInterval",            jsSetInterval,           2)
+  ctx.bindGlobal("clearTimeout",           jsClearTimer,            1)
+  ctx.bindGlobal("clearInterval",          jsClearTimer,            1)
 
-  # rAF / timer natives on window + global
-  installFn(winObj, "requestAnimationFrame",  cast[JSCFunction](jsRequestAnimationFrame), 1)
-  installFn(winObj, "cancelAnimationFrame",   cast[JSCFunction](jsCancelAnimationFrame),  1)
-  installFn(winObj, "setTimeout",             cast[JSCFunction](jsSetTimeout),            2)
-  installFn(winObj, "setInterval",            cast[JSCFunction](jsSetInterval),           2)
-  installFn(winObj, "clearTimeout",           cast[JSCFunction](jsClearTimer),            1)
-  installFn(winObj, "clearInterval",          cast[JSCFunction](jsClearTimer),            1)
+  # Image loader stub — will be overridden by XHR module's jsLoadImageReal
+  ctx.bindGlobal("__rw_loadImage", jsLoadImage, 2)
 
-  # __rw_getTicksMs and __rw_loadImage on global (used by JS preamble)
-  let tmFn = JS_NewCFunction(ctx, jsGetTicks, "__rw_getTicksMs", 0)
-  discard JS_SetPropertyStr(ctx, global, "__rw_getTicksMs", tmFn)
-  let liFn = JS_NewCFunction(ctx, cast[JSCFunction](jsLoadImage), "__rw_loadImage", 2)
-  discard JS_SetPropertyStr(ctx, global, "__rw_loadImage", liFn)
-
-  rw_JS_FreeValue(ctx, winObj)
-  rw_JS_FreeValue(ctx, global)
+  # Also put these on the window object so `window.setTimeout(...)` works
+  let winTimerGlue = """
+(function() {
+  var w = (typeof window !== 'undefined') ? window : {};
+  w.requestAnimationFrame  = requestAnimationFrame;
+  w.cancelAnimationFrame   = cancelAnimationFrame;
+  w.setTimeout             = setTimeout;
+  w.setInterval            = setInterval;
+  w.clearTimeout           = clearTimeout;
+  w.clearInterval          = clearInterval;
+  if (w.performance) w.performance.now = __rw_getTicksMs;
+  if (typeof performance !== 'undefined') performance.now = __rw_getTicksMs;
+})();
+"""
+  discard ctx.checkException(ctx.eval(cstring(winTimerGlue), "<dom-bind-glue>"),
+                             "<dom-bind-glue>")
 
 # ===========================================================================
 # Phase 3 — per-frame timer/rAF dispatch helpers
@@ -182,32 +243,32 @@ proc bindDom(state: ptr RWebviewState) =
 
 proc dispatchTimers(state: ptr RWebviewState) =
   ## Fire any timers whose fireAt <= now.  setInterval timers reschedule themselves.
-  let ctx  = state.jsCtx
+  let ctx  = state.scriptCtx
   let now  = SDL_GetTicks()
   var i = 0
   while i < state.timers.len:
     let t = addr state.timers[i]
     if not t.active:
-      rw_JS_FreeValue(ctx, t.fn)
+      ctx.freeValue(t.fn)
       state.timers.delete(i)
       continue
     if now >= t.fireAt:
       if t.interval > 0:
         # setInterval: reschedule first, then call (so cleared interval in callback works)
         t.fireAt = now + t.interval
-        let fn = rw_JS_DupValue(ctx, t.fn)
-        let r  = JS_Call(ctx, fn, rw_JS_Undefined(), 0, nil)
-        discard jsCheck(ctx, r, "setInterval callback")
-        rw_JS_FreeValue(ctx, fn)
+        let fn = ctx.dupValue(t.fn)
+        let r  = ctx.callFunction0(fn, ctx.newUndefined())
+        discard ctx.checkException(r, "setInterval callback")
+        ctx.freeValue(fn)
         inc i
       else:
         # setTimeout: deactivate, extract fn, delete, call
         t.active = false
         let fn = t.fn   # don't dup — we take ownership
         state.timers.delete(i)
-        let r = JS_Call(ctx, fn, rw_JS_Undefined(), 0, nil)
-        discard jsCheck(ctx, r, "setTimeout callback")
-        rw_JS_FreeValue(ctx, fn)
+        let r = ctx.callFunction0(fn, ctx.newUndefined())
+        discard ctx.checkException(r, "setTimeout callback")
+        ctx.freeValue(fn)
         # don't inc i: slot was removed
     else:
       inc i
@@ -215,23 +276,22 @@ proc dispatchTimers(state: ptr RWebviewState) =
 proc dispatchRaf(state: ptr RWebviewState) =
   ## Fire all pending rAF callbacks, then pump micro-tasks.
   ## Callbacks registered during dispatch go to rafPending for next frame.
-  let ctx = state.jsCtx
+  let ctx = state.scriptCtx
 
   # Pump any micro-tasks / Promise continuations BEFORE rAF callbacks,
   # so Promises queued during script execution resolve before rAF checks them.
-  while JS_ExecutePendingJob(state.rt, nil) > 0: discard
+  ctx.flushJobs()
 
   # Take current rafPending; anything registered during execution goes
   # to the fresh rafPending and fires on the NEXT frame (correct browser behaviour).
   var toRun = move(state.rafPending)
   state.rafPending = @[]
-  let ts = rw_JS_NewFloat64(ctx, float64(SDL_GetTicks()))
+  let ts = ctx.newFloat(float64(SDL_GetTicks()))
   for e in toRun:
-    var tsArg = ts
-    let r = JS_Call(ctx, e.fn, rw_JS_Undefined(), 1, addr tsArg)
-    discard jsCheck(ctx, r, "requestAnimationFrame callback")
-    rw_JS_FreeValue(ctx, e.fn)
-  rw_JS_FreeValue(ctx, ts)
+    let r = ctx.callFunction1(e.fn, ctx.newUndefined(), ts)
+    discard ctx.checkException(r, "requestAnimationFrame callback")
+    ctx.freeValue(e.fn)
+  ctx.freeValue(ts)
   # Pump any micro-tasks / Promise continuations
-  while JS_ExecutePendingJob(state.rt, nil) > 0: discard
+  ctx.flushJobs()
 

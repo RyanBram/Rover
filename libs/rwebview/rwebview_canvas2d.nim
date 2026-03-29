@@ -1,6 +1,46 @@
-﻿# ===========================================================================
-# Phase 5 — Canvas 2D state types and globals
-# ===========================================================================
+# =============================================================================
+# rwebview_canvas2d.nim
+# Canvas 2D state types and globals
+# =============================================================================
+#
+# Author    : Ryan Bramantya
+# Copyright : Copyright (c) 2026 Ryan Bramantya
+# License   : Apache License 2.0
+# Website   : https://github.com/RyanBram/Rover
+#
+# -----------------------------------------------------------------------------
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# -----------------------------------------------------------------------------
+#
+# Description:
+#   Implementation of Canvas 2D API (nanovg binding) with state types and globals.
+#
+# Documentation:
+#   See [Documentation] section at the bottom of this file.
+#
+# -----------------------------------------------------------------------------
+#
+# Included by:
+#   - rgss_quickjs_ffi         # JS helpers
+#   - rwebview_dom             # gState
+#   - rwebview_html            # fontFaceMap
+#
+# Used by:
+#   - rwebview.nim             # included after rwebview_dom.nim
+#
+# =============================================================================
 
 type
   CompositeOp = enum
@@ -43,7 +83,7 @@ type
     textAlign: string
     transform: array[6, float32]  # a,b,c,d,e,f
     stateStack: seq[Canvas2DSavedState]
-    canvasJsVal: JSValue    # reference to the canvas JS element (for width/height sync)
+    canvasJsVal: ScriptValue    # reference to the canvas JS element (for width/height sync)
     isDisplay: bool         # true when appended to document.body (shown on screen)
     # Gradient state
     gradX0, gradY0, gradX1, gradY1: float32
@@ -55,11 +95,27 @@ type
     # Path state (for arc+fill)
     pathActive: bool
     pathArcX, pathArcY, pathArcR: float32
+    dirty: bool           # true when pixels changed since last GL upload
 
 var canvas2dStates: seq[Canvas2DState]
 var patternStore: seq[PatternData]
-var ttfFontCache: Table[string, ptr TTF_Font]  # key = "family:size"
-var ttfInitialized: bool = false
+
+# -- Fonstash CPU wrapper FFI (rwebview_fonstash_core.c) --------------------
+proc rw_fons_init(atlasW: cint; atlasH: cint): cint {.importc, cdecl.}
+proc rw_fons_destroy() {.importc, cdecl.}
+proc rw_fons_add_font(name: cstring; path: cstring): cint {.importc, cdecl.}
+proc rw_fons_find_font(name: cstring): cint {.importc, cdecl.}
+proc rw_fons_set_font(fontId: cint) {.importc, cdecl.}
+proc rw_fons_set_size(size: cfloat) {.importc, cdecl.}
+proc rw_fons_text_width(text: cstring): cfloat {.importc, cdecl.}
+proc rw_fons_vert_metrics(ascender: ptr cfloat; descender: ptr cfloat; lineh: ptr cfloat) {.importc, cdecl.}
+proc rw_fons_render_text_rgba(text: cstring; r, g, b: uint8;
+                              outW, outH: ptr cint;
+                              outBaselineY: ptr cint): pointer {.importc, cdecl.}
+proc c_free(p: pointer) {.importc: "free", header: "<stdlib.h>".}
+
+var fonsInitialized: bool = false
+var fonsFontCache: Table[string, cint]  # key = "family" -> fonstash font ID
 var defaultFontPath: string = ""  # resolved on first use
 
 proc initCanvas2DState(w, h: int): Canvas2DState =
@@ -78,25 +134,32 @@ proc initCanvas2DState(w, h: int): Canvas2DState =
   result.textAlign = "start"
   result.transform = [1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f]  # identity
   result.patternWidth = 0; result.patternHeight = 0
+  result.dirty = true  # new canvas needs first upload
 
 proc resizeCanvas2D(state: var Canvas2DState; w, h: int) =
   if w == state.width and h == state.height: return
   state.width = w
   state.height = h
   state.pixels = newSeq[uint8](w * h * 4)
+  state.dirty = true
 
-proc getOrLoadFont(family: string; size: float32; baseDir: string): ptr TTF_Font =
-  if not ttfInitialized:
-    if not TTF_Init():
-      stderr.writeLine("[rwebview] TTF_Init failed")
-      return nil
-    ttfInitialized = true
-  let key = family & ":" & $size
-  if key in ttfFontCache:
-    return ttfFontCache[key]
-  # Try to find the font file
-  var path = ""
+proc getOrLoadFonsFont(family: string; size: float32; baseDir: string): cint =
+  ## Load or find a font via fonstash, set its size, and return font ID.
+  ## Returns -1 on failure.
+  if not fonsInitialized:
+    if rw_fons_init(1024, 1024) == 0:
+      stderr.writeLine("[rwebview] rw_fons_init failed")
+      return -1
+    fonsInitialized = true
+  # Check if this family is already loaded
   let lowerFamily = family.toLowerAscii()
+  if lowerFamily in fonsFontCache:
+    let fid = fonsFontCache[lowerFamily]
+    rw_fons_set_font(fid)
+    rw_fons_set_size(cfloat(size))
+    return fid
+  # Resolve font file path (same logic as before)
+  var path = ""
   # 1. Check @font-face map registered from CSS stylesheets
   if lowerFamily in fontFaceMap:
     path = fontFaceMap[lowerFamily]
@@ -121,15 +184,17 @@ proc getOrLoadFont(family: string; size: float32; baseDir: string): ptr TTF_Font
     path = defaultFontPath
   if path == "":
     stderr.writeLine("[rwebview] font not found: " & family)
-    return nil
-  let font = TTF_OpenFont(cstring(path), cfloat(size))
-  if font == nil:
-    stderr.writeLine("[rwebview] TTF_OpenFont failed for: " & path)
-    return nil
+    return -1
+  let fid = rw_fons_add_font(cstring(lowerFamily), cstring(path))
+  if fid < 0:
+    stderr.writeLine("[rwebview] rw_fons_add_font failed for: " & path)
+    return -1
   if defaultFontPath == "":
     defaultFontPath = path  # cache first successfully loaded font as default
-  ttfFontCache[key] = font
-  font
+  fonsFontCache[lowerFamily] = fid
+  rw_fons_set_font(fid)
+  rw_fons_set_size(cfloat(size))
+  fid
 
 proc parseCssColor(s: string; r, g, b, a: var uint8) =
   ## Parse CSS color string into RGBA components.
@@ -209,31 +274,32 @@ proc parseCssFont(fontStr: string; size: var float32; family: var string) =
 # Phase 5 — Canvas 2D JSCFunction callbacks and binding
 # ===========================================================================
 
-proc getCtx2DState(ctx: ptr JSContext; thisVal: JSValue): ptr Canvas2DState =
+proc getCtx2DState(ctx: ptr ScriptCtx; thisVal: ScriptValue): ptr Canvas2DState =
   ## Extract the Canvas2DState pointer from `this.__ctxId`.
-  let idProp = JS_GetPropertyStr(ctx, thisVal, "__ctxId")
+  let idProp = ctx.getProp(thisVal, "__ctxId")
   var id: int32
-  discard JS_ToInt32(ctx, addr id, idProp)
-  rw_JS_FreeValue(ctx, idProp)
+  id = ctx.toInt32(idProp)
+  ctx.freeValue(idProp)
   if id >= 0 and id < int32(canvas2dStates.len):
     return addr canvas2dStates[id]
   return nil
 
 # ── clearRect ────────────────────────────────────────────────────────────
-proc jsCtx2dClearRect(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dClearRect(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  cs.dirty = true
   var dx, dy, dw, dh: float64
-  discard JS_ToFloat64(ctx, addr dx, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr dy, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr dw, arg(argv, 2))
-  discard JS_ToFloat64(ctx, addr dh, arg(argv, 3))
+  dx = ctx.toFloat64(args[0])
+  dy = ctx.toFloat64(args[1])
+  dw = ctx.toFloat64(args[2])
+  dh = ctx.toFloat64(args[3])
   let x0 = max(0, int(dx))
   let y0 = max(0, int(dy))
   let x1 = min(cs.width, int(dx + dw))
   let y1 = min(cs.height, int(dy + dh))
-  if x1 <= x0 or y1 <= y0: return rw_JS_Undefined()
+  if x1 <= x0 or y1 <= y0: return ctx.newUndefined()
   if x0 == 0 and x1 >= cs.width:
     # Fast path: zero whole rows at once (single memset for the full canvas common case)
     zeroMem(addr cs.pixels[y0 * cs.width * 4], (y1 - y0) * cs.width * 4)
@@ -241,7 +307,7 @@ proc jsCtx2dClearRect(ctx: ptr JSContext; thisVal: JSValue;
     let rowBytes = (x1 - x0) * 4
     for y in y0..<y1:
       zeroMem(addr cs.pixels[(y * cs.width + x0) * 4], rowBytes)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── Compositing helper — applies one pixel (sR,sG,sB,sA) to dest ────────
 proc blendPixel(cs: ptr Canvas2DState; off: int; sR, sG, sB: uint8; sA: int) {.inline.} =
@@ -301,15 +367,16 @@ proc blendPixel(cs: ptr Canvas2DState; off: int; sR, sG, sB: uint8; sA: int) {.i
       cs.pixels[off+2] = uint8((gray * sa + int(cs.pixels[off+2]) * (255 - sa)) div 255)
 
 # ── fillRect ─────────────────────────────────────────────────────────────
-proc jsCtx2dFillRect(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dFillRect(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  cs.dirty = true
   var fdx, fdy, fdw, fdh: float64
-  discard JS_ToFloat64(ctx, addr fdx, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr fdy, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr fdw, arg(argv, 2))
-  discard JS_ToFloat64(ctx, addr fdh, arg(argv, 3))
+  fdx = ctx.toFloat64(args[0])
+  fdy = ctx.toFloat64(args[1])
+  fdw = ctx.toFloat64(args[2])
+  fdh = ctx.toFloat64(args[3])
   # Apply CTM to destination rect
   let fA = cs.transform[0]; let fB = cs.transform[1]
   let fC = cs.transform[2]; let fD = cs.transform[3]
@@ -322,7 +389,7 @@ proc jsCtx2dFillRect(ctx: ptr JSContext; thisVal: JSValue;
   let y0 = max(0, int(fsy))
   let x1 = min(cs.width, int(fsx + fsw))
   let y1 = min(cs.height, int(fsy + fsh))
-  if x1 <= x0 or y1 <= y0: return rw_JS_Undefined()
+  if x1 <= x0 or y1 <= y0: return ctx.newUndefined()
   let ga = cs.globalAlpha
 
   # --- Pattern fill ---
@@ -351,7 +418,7 @@ proc jsCtx2dFillRect(ctx: ptr JSContext; thisVal: JSValue;
         if sA > 0:
           let off = (y * cs.width + x) * 4
           blendPixel(cs, off, cs.patternPixels[si], cs.patternPixels[si+1], cs.patternPixels[si+2], sA)
-    return rw_JS_Undefined()
+    return ctx.newUndefined()
 
   # --- Gradient fill ---
   if cs.fillMode == fmGradient:
@@ -376,7 +443,7 @@ proc jsCtx2dFillRect(ctx: ptr JSContext; thisVal: JSValue;
         if sA > 0:
           let off = (y * cs.width + x) * 4
           blendPixel(cs, off, sR, sG, sB, sA)
-    return rw_JS_Undefined()
+    return ctx.newUndefined()
 
   # --- Solid color fill ---
   let a = uint8(float32(cs.fillA) * ga)
@@ -395,73 +462,88 @@ proc jsCtx2dFillRect(ctx: ptr JSContext; thisVal: JSValue;
       for x in x0..<x1:
         let off = (y * cs.width + x) * 4
         blendPixel(cs, off, cs.fillR, cs.fillG, cs.fillB, int(a))
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── strokeRect (stub — draws outline using fillStyle) ────────────────────
-proc jsCtx2dStrokeRect(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_Undefined()
+proc jsCtx2dStrokeRect(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ctx.newUndefined()
 
 # ── fillText ─────────────────────────────────────────────────────────────
-proc jsCtx2dFillText(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let text = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dFillText(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  cs.dirty = true
+  let text = ctx.toString(args[0])
   if text == nil or text[0] == '\0':
-    if text != nil: JS_FreeCString(ctx, text)
-    return rw_JS_Undefined()
+    if text != nil: ctx.freeCString(text)
+    return ctx.newUndefined()
   var dx, dy: float64
-  discard JS_ToFloat64(ctx, addr dx, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr dy, arg(argv, 2))
+  dx = ctx.toFloat64(args[1])
+  dy = ctx.toFloat64(args[2])
+  # Optional 4th arg: maxWidth (Canvas2D spec — compress text horizontally if wider)
+  var maxWidth: float64 = 0.0
+  if args.len > 3: maxWidth = ctx.toFloat64(args[3])
   # Apply transform to destination coordinates
   let tx = cs.transform[0] * float32(dx) + cs.transform[2] * float32(dy) + cs.transform[4]
   let ty = cs.transform[1] * float32(dx) + cs.transform[3] * float32(dy) + cs.transform[5]
   let baseDir = if gState != nil: gState.baseDir else: ""
-  let font = getOrLoadFont(cs.fontFamily, cs.fontSize, baseDir)
-  if font == nil:
-    JS_FreeCString(ctx, text)
-    return rw_JS_Undefined()
-  let color = SDL_Color(r: cs.fillR, g: cs.fillG, b: cs.fillB, a: 255)
-  let rawSurf = TTF_RenderText_Blended(font, text, 0, color)
-  JS_FreeCString(ctx, text)
-  if rawSurf == nil: return rw_JS_Undefined()
-  # Convert to RGBA byte order
-  let rgbaSurf = cast[ptr SDL_Surface](SDL_ConvertSurface(rawSurf, SDL_PIXELFORMAT_RGBA32))
-  SDL_DestroySurface(rawSurf)
-  if rgbaSurf == nil: return rw_JS_Undefined()
-  let sw = int(rgbaSurf.w)
-  let sh = int(rgbaSurf.h)
-  let srcPixels = cast[ptr UncheckedArray[uint8]](rgbaSurf.pixels)
+  let fontId = getOrLoadFonsFont(cs.fontFamily, cs.fontSize, baseDir)
+  if fontId < 0:
+    ctx.freeCString(text)
+    return ctx.newUndefined()
+  # Get font vertical metrics for accurate baseline/middle positioning
+  var ascF, descF, lhF: cfloat
+  rw_fons_vert_metrics(addr ascF, addr descF, addr lhF)
+  var sw, sh, baselineY: cint
+  let rgbaPtr = rw_fons_render_text_rgba(text, cs.fillR, cs.fillG, cs.fillB,
+                                          addr sw, addr sh, addr baselineY)
+  ctx.freeCString(text)
+  if rgbaPtr == nil: return ctx.newUndefined()
+  # Guard: reject bogus dimensions
+  if sw <= 0 or sh <= 0 or sw > 8192 or sh > 8192:
+    c_free(rgbaPtr); return ctx.newUndefined()
+  let expectPixLenF = cs.width * cs.height * 4
+  if cs.pixels.len != expectPixLenF:
+    c_free(rgbaPtr); return ctx.newUndefined()
+  let srcPixels = cast[ptr UncheckedArray[uint8]](rgbaPtr)
+  let pitch = int(sw) * 4
   # Adjust Y based on textBaseline
   var iy = int(ty)
   case cs.textBaseline
   of "top": discard  # y is already at top
-  of "middle": iy -= sh div 2
-  of "bottom", "ideographic": iy -= sh
-  else: iy -= sh * 3 div 4  # "alphabetic" — approximate baseline at ~75%
-  # Adjust X based on textAlign
+  of "middle":
+    # Em-square midpoint: stable across strings with/without descenders.
+    # mid_row = baselineY - (ascF + descF) / 2  (descF is negative in fontstash)
+    iy -= int(round(float32(baselineY) - (ascF + descF) / 2.0f))
+  of "bottom", "ideographic": iy -= int(sh)
+  else: iy -= int(baselineY)  # "alphabetic" — exact ascender offset from font metrics
+  # maxWidth compression: renderW is the target display width
+  let renderW = if maxWidth > 0.0 and float64(sw) > maxWidth: int(maxWidth) else: int(sw)
+  let doScaleX = renderW < int(sw)
+  # Adjust X based on textAlign (pivot uses renderW, not raw sw)
   var ix = int(tx)
   case cs.textAlign
-  of "center": ix -= sw div 2
-  of "right", "end": ix -= sw
+  of "center": ix -= renderW div 2
+  of "right", "end": ix -= renderW
   else: discard  # "left", "start"
   # Blit with alpha blending
   let ga = cs.globalAlpha
   let fullAlpha = ga >= 1.0
-  # Pre-compute column clip range once per text render (eliminates per-pixel
-  # bounds check inside the inner loop — biggest single speedup for fillText)
+  # Pre-compute column clip range once per text render
   let colBeg = max(0, -ix)
-  let colEnd = min(sw, cs.width - ix)
-  for row in 0..<sh:
+  let colEnd = min(renderW, cs.width - ix)
+  for row in 0..<int(sh):
     let dstY = iy + row
     if dstY < 0 or dstY >= cs.height: continue
     if colBeg >= colEnd: continue
-    let srcRowBase = cast[ptr UncheckedArray[uint8]](addr srcPixels[row * int(rgbaSurf.pitch)])
+    let srcRowBase = cast[ptr UncheckedArray[uint8]](addr srcPixels[row * pitch])
     let dstRowBase = cast[ptr UncheckedArray[uint32]](addr cs.pixels[(dstY * cs.width + ix + colBeg) * 4])
-    let srcBase    = colBeg
     for col in 0..<(colEnd - colBeg):
-      let src = cast[ptr array[4, uint8]](addr srcRowBase[(srcBase + col) * 4])
+      # Map destination column back to source (nearest-neighbour horizontal scale)
+      let srcCol = if doScaleX: (colBeg + col) * int(sw) div renderW else: colBeg + col
+      let src = cast[ptr array[4, uint8]](addr srcRowBase[srcCol * 4])
       let rawA = src[3]
       if rawA == 0: continue
       let sa = if fullAlpha: int(rawA) else: int(float32(rawA) * ga)
@@ -478,48 +560,65 @@ proc jsCtx2dFillText(ctx: ptr JSContext; thisVal: JSValue;
           dstPtr[1] = uint8((int(src[1]) * sa + int(dstPtr[1]) * da * (255 - sa) div 255) div outA)
           dstPtr[2] = uint8((int(src[2]) * sa + int(dstPtr[2]) * da * (255 - sa) div 255) div outA)
           dstPtr[3] = uint8(outA)
-  SDL_DestroySurface(rgbaSurf)
-  rw_JS_Undefined()
+  c_free(rgbaPtr)
+  ctx.newUndefined()
 
 # ── strokeText (outline rendering via offset blitting) ───────────────────
-proc jsCtx2dStrokeText(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let text = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dStrokeText(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  cs.dirty = true
+  let text = ctx.toString(args[0])
   if text == nil or text[0] == '\0':
-    if text != nil: JS_FreeCString(ctx, text)
-    return rw_JS_Undefined()
+    if text != nil: ctx.freeCString(text)
+    return ctx.newUndefined()
   var dx, dy: float64
-  discard JS_ToFloat64(ctx, addr dx, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr dy, arg(argv, 2))
+  dx = ctx.toFloat64(args[1])
+  dy = ctx.toFloat64(args[2])
+  # Optional 4th arg: maxWidth (Canvas2D spec — compress text horizontally if wider)
+  var maxWidth: float64 = 0.0
+  if args.len > 3: maxWidth = ctx.toFloat64(args[3])
   let tx = cs.transform[0] * float32(dx) + cs.transform[2] * float32(dy) + cs.transform[4]
   let ty = cs.transform[1] * float32(dx) + cs.transform[3] * float32(dy) + cs.transform[5]
   let baseDir = if gState != nil: gState.baseDir else: ""
-  let font = getOrLoadFont(cs.fontFamily, cs.fontSize, baseDir)
-  if font == nil:
-    JS_FreeCString(ctx, text)
-    return rw_JS_Undefined()
-  let color = SDL_Color(r: cs.strokeR, g: cs.strokeG, b: cs.strokeB, a: 255)
-  let rawSurf = TTF_RenderText_Blended(font, text, 0, color)
-  JS_FreeCString(ctx, text)
-  if rawSurf == nil: return rw_JS_Undefined()
-  let rgbaSurf = cast[ptr SDL_Surface](SDL_ConvertSurface(rawSurf, SDL_PIXELFORMAT_RGBA32))
-  SDL_DestroySurface(rawSurf)
-  if rgbaSurf == nil: return rw_JS_Undefined()
-  let sw = int(rgbaSurf.w)
-  let sh = int(rgbaSurf.h)
-  let srcPixels = cast[ptr UncheckedArray[uint8]](rgbaSurf.pixels)
+  let fontId = getOrLoadFonsFont(cs.fontFamily, cs.fontSize, baseDir)
+  if fontId < 0:
+    ctx.freeCString(text)
+    return ctx.newUndefined()
+  # Get font vertical metrics for accurate baseline/middle positioning
+  var ascF, descF, lhF: cfloat
+  rw_fons_vert_metrics(addr ascF, addr descF, addr lhF)
+  var sw, sh, baselineY: cint
+  let rgbaPtr = rw_fons_render_text_rgba(text, cs.strokeR, cs.strokeG, cs.strokeB,
+                                          addr sw, addr sh, addr baselineY)
+  ctx.freeCString(text)
+  if rgbaPtr == nil: return ctx.newUndefined()
+  # Guard: reject bogus dimensions
+  if sw <= 0 or sh <= 0 or sw > 8192 or sh > 8192:
+    c_free(rgbaPtr)
+    return ctx.newUndefined()
+  let srcBufLen = int(sw) * int(sh) * 4
+  let expectPixLen = cs.width * cs.height * 4
+  if cs.pixels.len != expectPixLen:
+    c_free(rgbaPtr); return ctx.newUndefined()
+  let srcPixels = cast[ptr UncheckedArray[uint8]](rgbaPtr)
+  let pitch = int(sw) * 4
   var iy = int(ty)
   case cs.textBaseline
   of "top": discard
-  of "middle": iy -= sh div 2
-  of "bottom", "ideographic": iy -= sh
-  else: iy -= sh * 3 div 4
+  of "middle":
+    # Em-square midpoint: stable across strings with/without descenders.
+    iy -= int(round(float32(baselineY) - (ascF + descF) / 2.0f))
+  of "bottom", "ideographic": iy -= int(sh)
+  else: iy -= int(baselineY)  # "alphabetic" — exact ascender offset from font metrics
+  # maxWidth compression: renderW is the target display width
+  let renderW = if maxWidth > 0.0 and float64(sw) > maxWidth: int(maxWidth) else: int(sw)
+  let doScaleX = renderW < int(sw)
   var ix = int(tx)
   case cs.textAlign
-  of "center": ix -= sw div 2
-  of "right", "end": ix -= sw
+  of "center": ix -= renderW div 2
+  of "right", "end": ix -= renderW
   else: discard
   # Render at 8 offsets for outline effect
   let lw = max(1, int(cs.lineWidth / 2.0f))
@@ -530,15 +629,24 @@ proc jsCtx2dStrokeText(ctx: ptr JSContext; thisVal: JSValue;
     let ox = ix + off[0]
     let oy = iy + off[1]
     let colBeg = max(0, -ox)
-    let colEnd = min(sw, cs.width - ox)
-    for row in 0..<sh:
+    let colEnd = min(renderW, cs.width - ox)
+    for row in 0..<int(sh):
       let dstY = oy + row
       if dstY < 0 or dstY >= cs.height: continue
       if colBeg >= colEnd: continue
-      let srcRowBase = cast[ptr UncheckedArray[uint8]](addr srcPixels[row * int(rgbaSurf.pitch)])
-      let dstRowBase = cast[ptr UncheckedArray[uint32]](addr cs.pixels[(dstY * cs.width + ox + colBeg) * 4])
+      let srcRowOff = row * pitch
+      # Bounds check against unscaled src buffer
+      let srcCheckCol = if doScaleX: (colEnd - 1) * int(sw) div renderW else: colEnd - 1
+      let srcLastByte = srcRowOff + srcCheckCol * 4 + 3
+      if srcLastByte >= srcBufLen: continue
+      let dstBaseOff = (dstY * cs.width + ox + colBeg) * 4
+      let dstLastByte = dstBaseOff + (colEnd - colBeg - 1) * 4 + 3
+      if dstBaseOff < 0 or dstLastByte >= cs.pixels.len: continue
+      let srcRowBase = cast[ptr UncheckedArray[uint8]](addr srcPixels[srcRowOff])
+      let dstRowBase = cast[ptr UncheckedArray[uint32]](addr cs.pixels[dstBaseOff])
       for col in 0..<(colEnd - colBeg):
-        let src = cast[ptr array[4, uint8]](addr srcRowBase[(colBeg + col) * 4])
+        let srcCol = if doScaleX: (colBeg + col) * int(sw) div renderW else: colBeg + col
+        let src = cast[ptr array[4, uint8]](addr srcRowBase[srcCol * 4])
         let rawA = src[3]
         if rawA == 0: continue
         # Apply both globalAlpha and strokeA to the outline opacity
@@ -556,104 +664,105 @@ proc jsCtx2dStrokeText(ctx: ptr JSContext; thisVal: JSValue;
             dstPtr[1] = uint8((int(src[1]) * sa + int(dstPtr[1]) * da * (255 - sa) div 255) div outA)
             dstPtr[2] = uint8((int(src[2]) * sa + int(dstPtr[2]) * da * (255 - sa) div 255) div outA)
             dstPtr[3] = uint8(outA)
-  SDL_DestroySurface(rgbaSurf)
-  rw_JS_Undefined()
+  c_free(rgbaPtr)
+  ctx.newUndefined()
 
 # ── measureText ──────────────────────────────────────────────────────────
-proc jsCtx2dMeasureText(ctx: ptr JSContext; thisVal: JSValue;
-                        argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
+proc jsCtx2dMeasureText(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
   if cs == nil:
-    let obj = JS_NewObject(ctx)
-    discard JS_SetPropertyStr(ctx, obj, "width", rw_JS_NewFloat64(ctx, 0.0))
+    let obj = ctx.newObject()
+    ctx.setPropSteal(obj, "width", ctx.newFloat(0.0))
     return obj
-  let text = jsToCString(ctx, arg(argv, 0))
+  let text = ctx.toString(args[0])
   if text == nil:
-    let obj = JS_NewObject(ctx)
-    discard JS_SetPropertyStr(ctx, obj, "width", rw_JS_NewFloat64(ctx, 0.0))
+    let obj = ctx.newObject()
+    ctx.setPropSteal(obj, "width", ctx.newFloat(0.0))
     return obj
   let baseDir = if gState != nil: gState.baseDir else: ""
-  let font = getOrLoadFont(cs.fontFamily, cs.fontSize, baseDir)
-  var tw: cint = 0
-  var th: cint = 0
-  if font != nil:
-    discard TTF_GetStringSize(font, text, 0, addr tw, addr th)
-  JS_FreeCString(ctx, text)
-  let obj = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, obj, "width", rw_JS_NewFloat64(ctx, float64(tw)))
+  let fontId = getOrLoadFonsFont(cs.fontFamily, cs.fontSize, baseDir)
+  var tw: cfloat = 0.0
+  if fontId >= 0:
+    tw = rw_fons_text_width(text)
+  ctx.freeCString(text)
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "width", ctx.newFloat(float64(tw)))
   obj
 
 # ── drawImage ────────────────────────────────────────────────────────────
-proc jsCtx2dDrawImage(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let source = arg(argv, 0)
+proc jsCtx2dDrawImage(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  cs.dirty = true
+  let source = args[0]
   # Determine source pixel data, width, height
   var srcPixels: ptr UncheckedArray[uint8] = nil
   var srcW, srcH: int = 0
   # Check if source is a canvas with __ctxId
-  let ctxIdProp = JS_GetPropertyStr(ctx, source, "__ctxId")
-  let ctxIdTag = rw_JS_VALUE_GET_TAG(ctxIdProp)
-  if ctxIdTag == JS_TAG_INT_C:
+  let ctxIdProp = ctx.getProp(source, "__ctxId")
+  if ctx.isNumber(ctxIdProp):
     var srcId: int32
-    discard JS_ToInt32(ctx, addr srcId, ctxIdProp)
+    srcId = ctx.toInt32(ctxIdProp)
     if srcId >= 0 and srcId < int32(canvas2dStates.len):
       let sc = addr canvas2dStates[srcId]
       srcW = sc.width; srcH = sc.height
       if sc.pixels.len > 0:
         srcPixels = cast[ptr UncheckedArray[uint8]](addr sc.pixels[0])
-  rw_JS_FreeValue(ctx, ctxIdProp)
+  ctx.freeValue(ctxIdProp)
   # Also check __pixelData (for HTMLImageElement)
   if srcPixels == nil:
-    let pxProp = JS_GetPropertyStr(ctx, source, "__pixelData")
-    let pxTag = rw_JS_VALUE_GET_TAG(pxProp)
-    if pxTag != JS_TAG_NULL_C and pxTag != JS_TAG_UNDEFINED_C:
-      let (data, sz) = jsGetBufferData(ctx, pxProp)
+    let pxProp = ctx.getProp(source, "__pixelData")
+    if not ctx.isNull(pxProp) and not ctx.isUndefined(pxProp):
+      var bufLen1: int
+      let data = ctx.getArrayBufferData(pxProp, bufLen1)
       if data != nil:
         srcPixels = cast[ptr UncheckedArray[uint8]](data)
-        let wProp = JS_GetPropertyStr(ctx, source, "naturalWidth")
-        let hProp = JS_GetPropertyStr(ctx, source, "naturalHeight")
+        let wProp = ctx.getProp(source, "naturalWidth")
+        let hProp = ctx.getProp(source, "naturalHeight")
         var iw, ih: int32
-        discard JS_ToInt32(ctx, addr iw, wProp)
-        discard JS_ToInt32(ctx, addr ih, hProp)
-        rw_JS_FreeValue(ctx, wProp)
-        rw_JS_FreeValue(ctx, hProp)
+        iw = ctx.toInt32(wProp)
+        ih = ctx.toInt32(hProp)
+        ctx.freeValue(wProp)
+        ctx.freeValue(hProp)
         srcW = int(iw); srcH = int(ih)
-    rw_JS_FreeValue(ctx, pxProp)
+    ctx.freeValue(pxProp)
   if srcPixels == nil or srcW == 0 or srcH == 0:
-    return rw_JS_Undefined()
+    return ctx.newUndefined()
   # Parse arguments: drawImage(img, dx, dy) or (img, dx, dy, dw, dh)
   # or (img, sx, sy, sw, sh, dx, dy, dw, dh)
   var sx, sy, sw, sh: int
   var dx, dy, dw, dh: int
-  if argc >= 9:
+  if args.len >= 9:
     var f: float64
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 1)); sx = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 2)); sy = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 3)); sw = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 4)); sh = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 5)); dx = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 6)); dy = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 7)); dw = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 8)); dh = int(f)
-  elif argc >= 5:
+    f = ctx.toFloat64(args[1]); sx = int(f)
+    f = ctx.toFloat64(args[2]); sy = int(f)
+    f = ctx.toFloat64(args[3]); sw = int(f)
+    f = ctx.toFloat64(args[4]); sh = int(f)
+    f = ctx.toFloat64(args[5]); dx = int(f)
+    f = ctx.toFloat64(args[6]); dy = int(f)
+    f = ctx.toFloat64(args[7]); dw = int(f)
+    f = ctx.toFloat64(args[8]); dh = int(f)
+  elif args.len >= 5:
     sx = 0; sy = 0; sw = srcW; sh = srcH
     var f: float64
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 1)); dx = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 2)); dy = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 3)); dw = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 4)); dh = int(f)
+    f = ctx.toFloat64(args[1]); dx = int(f)
+    f = ctx.toFloat64(args[2]); dy = int(f)
+    f = ctx.toFloat64(args[3]); dw = int(f)
+    f = ctx.toFloat64(args[4]); dh = int(f)
   else:
     sx = 0; sy = 0; sw = srcW; sh = srcH; dw = srcW; dh = srcH
     var f: float64
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 1)); dx = int(f)
-    discard JS_ToFloat64(ctx, addr f, arg(argv, 2)); dy = int(f)
+    f = ctx.toFloat64(args[1]); dx = int(f)
+    f = ctx.toFloat64(args[2]); dy = int(f)
   # Apply CTM [a,b,c,d,e,f] to destination rect. PIXI calls setTransform per sprite
   # then drawImage at logical (0,0) — the CTM carry the world position and scale.
   let ctmA = cs.transform[0]; let ctmB = cs.transform[1]
   let ctmC = cs.transform[2]; let ctmD = cs.transform[3]
   let ctmE = cs.transform[4]; let ctmF = cs.transform[5]
+  # Save original destination rect before CTM overwrite (needed for affine path).
+  let origDx = dx; let origDy = dy; let origDw = dw; let origDh = dh
   let tdx = ctmA * float32(dx) + ctmC * float32(dy) + ctmE
   let tdy = ctmB * float32(dx) + ctmD * float32(dy) + ctmF
   let tdw = abs(ctmA) * float32(dw) + abs(ctmC) * float32(dh)
@@ -700,8 +809,52 @@ proc jsCtx2dDrawImage(ctx: ptr JSContext; thisVal: JSValue;
                 cs.pixels[di+1] = uint8((int(srcPixels[si+1]) * sia + int(cs.pixels[di+1]) * da * (255 - sia) div 255) div outA)
                 cs.pixels[di+2] = uint8((int(srcPixels[si+2]) * sia + int(cs.pixels[di+2]) * da * (255 - sia) div 255) div outA)
                 cs.pixels[di+3] = uint8(outA)
-    return rw_JS_Undefined()
-  # General path: scaling / compositing / alpha
+    return ctx.newUndefined()
+  # Affine-sampled path: handles rotation/skew correctly by using per-pixel
+  # inverse-transform sampling instead of AABB + linear mapping.
+  # Activated when the CTM has a non-zero rotation component (b≠0 or c≠0).
+  let hasRotation = abs(ctmB) > 0.001f or abs(ctmC) > 0.001f
+  if hasRotation:
+    let det = ctmA * ctmD - ctmB * ctmC
+    if abs(det) > 1e-8f:
+      let invDet = 1.0f / det
+      let invA = ctmD * invDet
+      let invB = -ctmB * invDet
+      let invC = -ctmC * invDet
+      let invD = ctmA * invDet
+      let invE = (ctmC * ctmF - ctmD * ctmE) * invDet
+      let invF = (ctmB * ctmE - ctmA * ctmF) * invDet
+      let aabbX0 = max(0, dx)
+      let aabbX1 = min(cs.width, dx + dw)
+      let aabbY0 = max(0, dy)
+      let aabbY1 = min(cs.height, dy + dh)
+      let odw = float32(origDw); let odh = float32(origDh)
+      let osx = float32(sx); let osy = float32(sy)
+      let osw = float32(sw); let osh = float32(sh)
+      let odx = float32(origDx); let ody = float32(origDy)
+      for canvasY in aabbY0..<aabbY1:
+        for canvasX in aabbX0..<aabbX1:
+          let localX = invA * float32(canvasX) + invC * float32(canvasY) + invE
+          let localY = invB * float32(canvasX) + invD * float32(canvasY) + invF
+          let u = (localX - odx) / odw
+          let v = (localY - ody) / odh
+          if u < 0.0f or u >= 1.0f or v < 0.0f or v >= 1.0f: continue
+          let srcIx = int(osx + u * osw)
+          let srcIy = int(osy + v * osh)
+          if srcIx < sx or srcIx >= sx + sw: continue
+          if srcIy < sy or srcIy >= sy + sh: continue
+          let si = (srcIy * srcW + srcIx) * 4
+          let di = (canvasY * cs.width + canvasX) * 4
+          let rawA = srcPixels[si + 3]
+          if rawA == 0'u8:
+            if cs.compositeOp == copDestinationIn:
+              cs.pixels[di+3] = 0
+            continue
+          let sa = if ga >= 1.0: int(rawA) else: int(float32(rawA) * ga)
+          if sa > 0:
+            blendPixel(cs, di, srcPixels[si], srcPixels[si+1], srcPixels[si+2], sa)
+    return ctx.newUndefined()
+  # General path: axis-aligned scaling / compositing / alpha
   for row in 0..<dh:
     let dstY = dy + row
     if dstY < 0 or dstY >= cs.height: continue
@@ -722,27 +875,27 @@ proc jsCtx2dDrawImage(ctx: ptr JSContext; thisVal: JSValue;
         # source is transparent → erase destination (this clips the outline/highlight
         # to the sprite shape; without this, areas outside the sprite stay lit up)
         cs.pixels[di+3] = 0
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── getImageData ─────────────────────────────────────────────────────────
-proc jsCtx2dGetImageData(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
+proc jsCtx2dGetImageData(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
   var sx, sy, sw, sh: float64
-  discard JS_ToFloat64(ctx, addr sx, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr sy, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr sw, arg(argv, 2))
-  discard JS_ToFloat64(ctx, addr sh, arg(argv, 3))
+  sx = ctx.toFloat64(args[0])
+  sy = ctx.toFloat64(args[1])
+  sw = ctx.toFloat64(args[2])
+  sh = ctx.toFloat64(args[3])
   let iw = int(sw); let ih = int(sh)
   let totalBytes = iw * ih * 4
   # Create a Uint8ClampedArray with copies of pixel data
   let jsStr = "new Uint8ClampedArray(" & $totalBytes & ")"
-  let arr = JS_Eval(ctx, cstring(jsStr), csize_t(jsStr.len), "<getImageData>", JS_EVAL_TYPE_GLOBAL)
+  let arr = ctx.eval(cstring(jsStr), "<getImageData>")
   if cs != nil and totalBytes > 0:
-    let abProp = JS_GetPropertyStr(ctx, arr, "buffer")
-    var abSize: csize_t
-    let abPtr = JS_GetArrayBuffer(ctx, addr abSize, abProp)
-    rw_JS_FreeValue(ctx, abProp)
+    let abProp = ctx.getProp(arr, "buffer")
+    var abSize: int
+    let abPtr = ctx.getArrayBufferData(abProp, abSize)
+    ctx.freeValue(abProp)
     if abPtr != nil:
       let dst = cast[ptr UncheckedArray[uint8]](abPtr)
       let ix0 = int(sx); let iy0 = int(sy)
@@ -755,32 +908,34 @@ proc jsCtx2dGetImageData(ctx: ptr JSContext; thisVal: JSValue;
             let si = (srcY * cs.width + srcX) * 4
             dst[di] = cs.pixels[si]; dst[di+1] = cs.pixels[si+1]
             dst[di+2] = cs.pixels[si+2]; dst[di+3] = cs.pixels[si+3]
-  let obj = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, obj, "data", arr)
-  discard JS_SetPropertyStr(ctx, obj, "width", rw_JS_NewInt32(ctx, int32(iw)))
-  discard JS_SetPropertyStr(ctx, obj, "height", rw_JS_NewInt32(ctx, int32(ih)))
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "data", arr)
+  ctx.setPropSteal(obj, "width", ctx.newInt(int32(iw)))
+  ctx.setPropSteal(obj, "height", ctx.newInt(int32(ih)))
   obj
 
 # ── putImageData ─────────────────────────────────────────────────────────
-proc jsCtx2dPutImageData(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let imageData = arg(argv, 0)
+proc jsCtx2dPutImageData(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  cs.dirty = true
+  let imageData = args[0]
   var dx, dy: float64
-  discard JS_ToFloat64(ctx, addr dx, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr dy, arg(argv, 2))
-  let dataProp = JS_GetPropertyStr(ctx, imageData, "data")
-  let (srcPtr, srcLen) = jsGetBufferData(ctx, dataProp)
-  rw_JS_FreeValue(ctx, dataProp)
-  if srcPtr == nil: return rw_JS_Undefined()
-  let wProp = JS_GetPropertyStr(ctx, imageData, "width")
-  let hProp = JS_GetPropertyStr(ctx, imageData, "height")
+  dx = ctx.toFloat64(args[1])
+  dy = ctx.toFloat64(args[2])
+  let dataProp = ctx.getProp(imageData, "data")
+  var bufLen2: int
+  let srcPtr = ctx.getArrayBufferData(dataProp, bufLen2)
+  ctx.freeValue(dataProp)
+  if srcPtr == nil: return ctx.newUndefined()
+  let wProp = ctx.getProp(imageData, "width")
+  let hProp = ctx.getProp(imageData, "height")
   var iw, ih: int32
-  discard JS_ToInt32(ctx, addr iw, wProp)
-  discard JS_ToInt32(ctx, addr ih, hProp)
-  rw_JS_FreeValue(ctx, wProp)
-  rw_JS_FreeValue(ctx, hProp)
+  iw = ctx.toInt32(wProp)
+  ih = ctx.toInt32(hProp)
+  ctx.freeValue(wProp)
+  ctx.freeValue(hProp)
   let src = cast[ptr UncheckedArray[uint8]](srcPtr)
   let ix0 = int(dx); let iy0 = int(dy)
   for row in 0..<int(ih):
@@ -793,13 +948,13 @@ proc jsCtx2dPutImageData(ctx: ptr JSContext; thisVal: JSValue;
       let di = (dstY * cs.width + dstX) * 4
       cs.pixels[di] = src[si]; cs.pixels[di+1] = src[si+1]
       cs.pixels[di+2] = src[si+2]; cs.pixels[di+3] = src[si+3]
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── save / restore ───────────────────────────────────────────────────────
-proc jsCtx2dSave(ctx: ptr JSContext; thisVal: JSValue;
-                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dSave(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   cs.stateStack.add(Canvas2DSavedState(
     fillR: cs.fillR, fillG: cs.fillG, fillB: cs.fillB, fillA: cs.fillA,
     strokeR: cs.strokeR, strokeG: cs.strokeG, strokeB: cs.strokeB, strokeA: cs.strokeA,
@@ -810,12 +965,12 @@ proc jsCtx2dSave(ctx: ptr JSContext; thisVal: JSValue;
     fontFamily: cs.fontFamily, textBaseline: cs.textBaseline,
     textAlign: cs.textAlign, transform: cs.transform
   ))
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dRestore(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil or cs.stateStack.len == 0: return rw_JS_Undefined()
+proc jsCtx2dRestore(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil or cs.stateStack.len == 0: return ctx.newUndefined()
   let saved = cs.stateStack.pop()
   cs.fillR = saved.fillR; cs.fillG = saved.fillG
   cs.fillB = saved.fillB; cs.fillA = saved.fillA
@@ -828,26 +983,26 @@ proc jsCtx2dRestore(ctx: ptr JSContext; thisVal: JSValue;
   cs.fontSize = saved.fontSize; cs.fontFamily = saved.fontFamily
   cs.textBaseline = saved.textBaseline; cs.textAlign = saved.textAlign
   cs.transform = saved.transform
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── transform operations ─────────────────────────────────────────────────
-proc jsCtx2dTranslate(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dTranslate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   var tx, ty: float64
-  discard JS_ToFloat64(ctx, addr tx, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr ty, arg(argv, 1))
+  tx = ctx.toFloat64(args[0])
+  ty = ctx.toFloat64(args[1])
   cs.transform[4] += cs.transform[0] * float32(tx) + cs.transform[2] * float32(ty)
   cs.transform[5] += cs.transform[1] * float32(tx) + cs.transform[3] * float32(ty)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dRotate(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dRotate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   var angle: float64
-  discard JS_ToFloat64(ctx, addr angle, arg(argv, 0))
+  angle = ctx.toFloat64(args[0])
   let cosA = cos(angle).float32
   let sinA = sin(angle).float32
   let a = cs.transform[0]; let b = cs.transform[1]
@@ -856,152 +1011,155 @@ proc jsCtx2dRotate(ctx: ptr JSContext; thisVal: JSValue;
   cs.transform[1] = b * cosA + d * sinA
   cs.transform[2] = c * cosA - a * sinA
   cs.transform[3] = d * cosA - b * sinA
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dScale(ctx: ptr JSContext; thisVal: JSValue;
-                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dScale(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   var sx, sy: float64
-  discard JS_ToFloat64(ctx, addr sx, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr sy, arg(argv, 1))
+  sx = ctx.toFloat64(args[0])
+  sy = ctx.toFloat64(args[1])
   cs.transform[0] *= float32(sx); cs.transform[1] *= float32(sx)
   cs.transform[2] *= float32(sy); cs.transform[3] *= float32(sy)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dSetTransform(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  if argc >= 6:
+proc jsCtx2dSetTransform(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  if args.len >= 6:
     var v: float64
-    discard JS_ToFloat64(ctx, addr v, arg(argv, 0)); cs.transform[0] = float32(v)
-    discard JS_ToFloat64(ctx, addr v, arg(argv, 1)); cs.transform[1] = float32(v)
-    discard JS_ToFloat64(ctx, addr v, arg(argv, 2)); cs.transform[2] = float32(v)
-    discard JS_ToFloat64(ctx, addr v, arg(argv, 3)); cs.transform[3] = float32(v)
-    discard JS_ToFloat64(ctx, addr v, arg(argv, 4)); cs.transform[4] = float32(v)
-    discard JS_ToFloat64(ctx, addr v, arg(argv, 5)); cs.transform[5] = float32(v)
-  rw_JS_Undefined()
+    v = ctx.toFloat64(args[0]); cs.transform[0] = float32(v)
+    v = ctx.toFloat64(args[1]); cs.transform[1] = float32(v)
+    v = ctx.toFloat64(args[2]); cs.transform[2] = float32(v)
+    v = ctx.toFloat64(args[3]); cs.transform[3] = float32(v)
+    v = ctx.toFloat64(args[4]); cs.transform[4] = float32(v)
+    v = ctx.toFloat64(args[5]); cs.transform[5] = float32(v)
+  ctx.newUndefined()
 
-proc jsCtx2dResetTransform(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dResetTransform(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   cs.transform = [1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f]
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── createLinearGradient / createRadialGradient ──────────────────────────
-proc jsGradAddColorStop(ctx: ptr JSContext; thisVal: JSValue;
-                        argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGradAddColorStop(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   ## addColorStop(offset, colorString) — stores parsed RGBA on gradient object
   var offset: float64
-  discard JS_ToFloat64(ctx, addr offset, arg(argv, 0))
-  let colorStr = jsToCString(ctx, arg(argv, 1))
-  if colorStr == nil: return rw_JS_Undefined()
+  offset = ctx.toFloat64(args[0])
+  let colorStr = ctx.toString(args[1])
+  if colorStr == nil: return ctx.newUndefined()
   var r, g, b, a: uint8
   parseCssColor($colorStr, r, g, b, a)
-  JS_FreeCString(ctx, colorStr)
+  ctx.freeCString(colorStr)
   let prefix = if offset <= 0.5: "__c0" else: "__c1"
-  discard JS_SetPropertyStr(ctx, thisVal, prefix & "r", rw_JS_NewInt32(ctx, int32(r)))
-  discard JS_SetPropertyStr(ctx, thisVal, prefix & "g", rw_JS_NewInt32(ctx, int32(g)))
-  discard JS_SetPropertyStr(ctx, thisVal, prefix & "b", rw_JS_NewInt32(ctx, int32(b)))
-  discard JS_SetPropertyStr(ctx, thisVal, prefix & "a", rw_JS_NewInt32(ctx, int32(a)))
-  rw_JS_Undefined()
+  let kr = prefix & "r"; let kg = prefix & "g"
+  let kb = prefix & "b"; let ka = prefix & "a"
+  ctx.setPropSteal(this, cstring(kr), ctx.newInt(int32(r)))
+  ctx.setPropSteal(this, cstring(kg), ctx.newInt(int32(g)))
+  ctx.setPropSteal(this, cstring(kb), ctx.newInt(int32(b)))
+  ctx.setPropSteal(this, cstring(ka), ctx.newInt(int32(a)))
+  ctx.newUndefined()
 
-proc jsCtx2dCreateLinearGradient(ctx: ptr JSContext; thisVal: JSValue;
-                                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsCtx2dCreateLinearGradient(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   var x0, y0, x1, y1: float64
-  discard JS_ToFloat64(ctx, addr x0, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr y0, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr x1, arg(argv, 2))
-  discard JS_ToFloat64(ctx, addr y1, arg(argv, 3))
-  let grad = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, grad, "__isGradient", rw_JS_NewInt32(ctx, 1))
-  discard JS_SetPropertyStr(ctx, grad, "__x0", rw_JS_NewFloat64(ctx, x0))
-  discard JS_SetPropertyStr(ctx, grad, "__y0", rw_JS_NewFloat64(ctx, y0))
-  discard JS_SetPropertyStr(ctx, grad, "__x1", rw_JS_NewFloat64(ctx, x1))
-  discard JS_SetPropertyStr(ctx, grad, "__y1", rw_JS_NewFloat64(ctx, y1))
-  let addFn = JS_NewCFunction(ctx, jsGradAddColorStop, "addColorStop", 2)
-  discard JS_SetPropertyStr(ctx, grad, "addColorStop", addFn)
+  x0 = ctx.toFloat64(args[0])
+  y0 = ctx.toFloat64(args[1])
+  x1 = ctx.toFloat64(args[2])
+  y1 = ctx.toFloat64(args[3])
+  let grad = ctx.newObject()
+  ctx.setPropSteal(grad, "__isGradient", ctx.newInt(1))
+  ctx.setPropSteal(grad, "__x0", ctx.newFloat(x0))
+  ctx.setPropSteal(grad, "__y0", ctx.newFloat(y0))
+  ctx.setPropSteal(grad, "__x1", ctx.newFloat(x1))
+  ctx.setPropSteal(grad, "__y1", ctx.newFloat(y1))
+  let addFn = ctx.newFunction("addColorStop", jsGradAddColorStop, int(2))
+  ctx.setPropSteal(grad, "addColorStop", addFn)
   grad
 
-proc jsCtx2dCreateRadialGradient(ctx: ptr JSContext; thisVal: JSValue;
-                                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsCtx2dCreateRadialGradient(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   # Treat radial as linear for now (rare in RPG Maker)
   var x0, y0, x1, y1: float64
-  discard JS_ToFloat64(ctx, addr x0, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr y0, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr x1, arg(argv, 3))
-  discard JS_ToFloat64(ctx, addr y1, arg(argv, 4))
-  let grad = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, grad, "__isGradient", rw_JS_NewInt32(ctx, 1))
-  discard JS_SetPropertyStr(ctx, grad, "__x0", rw_JS_NewFloat64(ctx, x0))
-  discard JS_SetPropertyStr(ctx, grad, "__y0", rw_JS_NewFloat64(ctx, y0))
-  discard JS_SetPropertyStr(ctx, grad, "__x1", rw_JS_NewFloat64(ctx, x1))
-  discard JS_SetPropertyStr(ctx, grad, "__y1", rw_JS_NewFloat64(ctx, y1))
-  let addFn = JS_NewCFunction(ctx, jsGradAddColorStop, "addColorStop", 2)
-  discard JS_SetPropertyStr(ctx, grad, "addColorStop", addFn)
+  x0 = ctx.toFloat64(args[0])
+  y0 = ctx.toFloat64(args[1])
+  x1 = ctx.toFloat64(args[3])
+  y1 = ctx.toFloat64(args[4])
+  let grad = ctx.newObject()
+  ctx.setPropSteal(grad, "__isGradient", ctx.newInt(1))
+  ctx.setPropSteal(grad, "__x0", ctx.newFloat(x0))
+  ctx.setPropSteal(grad, "__y0", ctx.newFloat(y0))
+  ctx.setPropSteal(grad, "__x1", ctx.newFloat(x1))
+  ctx.setPropSteal(grad, "__y1", ctx.newFloat(y1))
+  let addFn = ctx.newFunction("addColorStop", jsGradAddColorStop, int(2))
+  ctx.setPropSteal(grad, "addColorStop", addFn)
   grad
 
-proc jsCtx2dCreatePattern(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsCtx2dCreatePattern(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   ## createPattern(sourceCanvas, repetition) — returns pattern object with source pixel data
-  let source = arg(argv, 0)
-  let pat = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, pat, "__isPattern", rw_JS_NewInt32(ctx, 1))
+  let source = args[0]
+  let pat = ctx.newObject()
+  ctx.setPropSteal(pat, "__isPattern", ctx.newInt(1))
   # Try to get source canvas pixel data via __ctxId
-  let idProp = JS_GetPropertyStr(ctx, source, "__ctxId")
+  let idProp = ctx.getProp(source, "__ctxId")
   var srcId: int32 = -1
-  discard JS_ToInt32(ctx, addr srcId, idProp)
-  rw_JS_FreeValue(ctx, idProp)
+  srcId = ctx.toInt32(idProp)
+  ctx.freeValue(idProp)
   if srcId >= 0 and srcId < int32(canvas2dStates.len):
     let srcCs = addr canvas2dStates[srcId]
     let patId = int32(patternStore.len)
     patternStore.add(PatternData(width: srcCs.width, height: srcCs.height, pixels: srcCs.pixels))
-    discard JS_SetPropertyStr(ctx, pat, "__patId", rw_JS_NewInt32(ctx, patId))
+    ctx.setPropSteal(pat, "__patId", ctx.newInt(patId))
   pat
 
 # ── isPointInPath (stub) ─────────────────────────────────────────────────
-proc jsCtx2dIsPointInPath(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_False()
+proc jsCtx2dIsPointInPath(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ctx.newBool(false)
 
 # ── Path operations ──────────────────────────────────────────────────────
-proc jsCtx2dNoop(ctx: ptr JSContext; thisVal: JSValue;
-                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_Undefined()
+proc jsCtx2dNoop(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ctx.newUndefined()
 
-proc jsCtx2dBeginPath(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
+proc jsCtx2dBeginPath(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
   if cs != nil:
     cs.pathActive = false
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dArc(ctx: ptr JSContext; thisVal: JSValue;
-                argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dArc(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   var x, y, radius, startAngle, endAngle: float64
-  discard JS_ToFloat64(ctx, addr x, arg(argv, 0))
-  discard JS_ToFloat64(ctx, addr y, arg(argv, 1))
-  discard JS_ToFloat64(ctx, addr radius, arg(argv, 2))
-  discard JS_ToFloat64(ctx, addr startAngle, arg(argv, 3))
-  discard JS_ToFloat64(ctx, addr endAngle, arg(argv, 4))
+  x = ctx.toFloat64(args[0])
+  y = ctx.toFloat64(args[1])
+  radius = ctx.toFloat64(args[2])
+  startAngle = ctx.toFloat64(args[3])
+  endAngle = ctx.toFloat64(args[4])
   # Store arc params — only support full circles (0 to 2π) for now
   cs.pathActive = true
   cs.pathArcX = float32(x)
   cs.pathArcY = float32(y)
   cs.pathArcR = float32(radius)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dFill(ctx: ptr JSContext; thisVal: JSValue;
-                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil or not cs.pathActive: return rw_JS_Undefined()
+proc jsCtx2dFill(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil or not cs.pathActive: return ctx.newUndefined()
+  cs.dirty = true
   # Fill a circle at (pathArcX, pathArcY) with radius pathArcR
   let cx = cs.pathArcX; let cy = cs.pathArcY; let r = cs.pathArcR
-  if r <= 0: return rw_JS_Undefined()
+  if r <= 0: return ctx.newUndefined()
   let ga = cs.globalAlpha
   let a = uint8(float32(cs.fillA) * ga)
   let r2 = r * r
@@ -1017,88 +1175,87 @@ proc jsCtx2dFill(ctx: ptr JSContext; thisVal: JSValue;
         let off = (y * cs.width + x) * 4
         blendPixel(cs, off, cs.fillR, cs.fillG, cs.fillB, int(a))
   cs.pathActive = false
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── Property getters/setters ─────────────────────────────────────────────
 # These are handled via a JS wrapper that syncs properties to native calls.
 
-proc jsCtx2dSetFont(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let fontStr = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dSetFont(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let fontStr = ctx.toString(args[0])
   if fontStr != nil:
     parseCssFont($fontStr, cs.fontSize, cs.fontFamily)
-    JS_FreeCString(ctx, fontStr)
-  rw_JS_Undefined()
+    ctx.freeCString(fontStr)
+  ctx.newUndefined()
 
-proc jsCtx2dSetFillStyle(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let tag = rw_JS_VALUE_GET_TAG(arg(argv, 0))
-  if tag == JS_TAG_INT_C or tag == JS_TAG_FLOAT64_C:
-    return rw_JS_Undefined()
-  let str = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dSetFillStyle(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  if ctx.isNumber(args[0]):
+    return ctx.newUndefined()
+  let str = ctx.toString(args[0])
   if str != nil:
     parseCssColor($str, cs.fillR, cs.fillG, cs.fillB, cs.fillA)
     cs.fillMode = fmColor
-    JS_FreeCString(ctx, str)
-  rw_JS_Undefined()
+    ctx.freeCString(str)
+  ctx.newUndefined()
 
-proc jsCtx2dSetGlobalAlpha(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dSetGlobalAlpha(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   var a: float64
-  discard JS_ToFloat64(ctx, addr a, arg(argv, 0))
+  a = ctx.toFloat64(args[0])
   cs.globalAlpha = float32(max(0.0, min(1.0, a)))
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dSetTextBaseline(ctx: ptr JSContext; thisVal: JSValue;
-                            argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let s = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dSetTextBaseline(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let s = ctx.toString(args[0])
   if s != nil:
     cs.textBaseline = $s
-    JS_FreeCString(ctx, s)
-  rw_JS_Undefined()
+    ctx.freeCString(s)
+  ctx.newUndefined()
 
-proc jsCtx2dSetTextAlign(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let s = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dSetTextAlign(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let s = ctx.toString(args[0])
   if s != nil:
     cs.textAlign = $s
-    JS_FreeCString(ctx, s)
-  rw_JS_Undefined()
+    ctx.freeCString(s)
+  ctx.newUndefined()
 
-proc jsCtx2dSetStrokeStyle(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let str = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dSetStrokeStyle(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let str = ctx.toString(args[0])
   if str != nil:
     parseCssColor($str, cs.strokeR, cs.strokeG, cs.strokeB, cs.strokeA)
-    JS_FreeCString(ctx, str)
-  rw_JS_Undefined()
+    ctx.freeCString(str)
+  ctx.newUndefined()
 
-proc jsCtx2dSetLineWidth(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
+proc jsCtx2dSetLineWidth(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
   var v: float64
-  discard JS_ToFloat64(ctx, addr v, arg(argv, 0))
+  v = ctx.toFloat64(args[0])
   cs.lineWidth = float32(max(0.0, v))
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dSetCompositeOp(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let s = jsToCString(ctx, arg(argv, 0))
+proc jsCtx2dSetCompositeOp(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let s = ctx.toString(args[0])
   if s != nil:
     case $s
     of "source-over": cs.compositeOp = copSourceOver
@@ -1109,114 +1266,111 @@ proc jsCtx2dSetCompositeOp(ctx: ptr JSContext; thisVal: JSValue;
     of "destination-in": cs.compositeOp = copDestinationIn
     of "saturation": cs.compositeOp = copSaturation
     else: discard
-    JS_FreeCString(ctx, s)
-  rw_JS_Undefined()
+    ctx.freeCString(s)
+  ctx.newUndefined()
 
-proc jsCtx2dSetFillStyleGradient(ctx: ptr JSContext; thisVal: JSValue;
-                                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsCtx2dSetFillStyleGradient(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   ## __rw_setFillStyleGradient(gradObj) — reads gradient data and stores in Canvas2DState
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let grad = arg(argv, 0)
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let grad = args[0]
   var v: float64
-  let x0p = JS_GetPropertyStr(ctx, grad, "__x0"); discard JS_ToFloat64(ctx, addr v, x0p); cs.gradX0 = float32(v); rw_JS_FreeValue(ctx, x0p)
-  let y0p = JS_GetPropertyStr(ctx, grad, "__y0"); discard JS_ToFloat64(ctx, addr v, y0p); cs.gradY0 = float32(v); rw_JS_FreeValue(ctx, y0p)
-  let x1p = JS_GetPropertyStr(ctx, grad, "__x1"); discard JS_ToFloat64(ctx, addr v, x1p); cs.gradX1 = float32(v); rw_JS_FreeValue(ctx, x1p)
-  let y1p = JS_GetPropertyStr(ctx, grad, "__y1"); discard JS_ToFloat64(ctx, addr v, y1p); cs.gradY1 = float32(v); rw_JS_FreeValue(ctx, y1p)
+  let x0p = ctx.getProp(grad, "__x0"); v = ctx.toFloat64(x0p); cs.gradX0 = float32(v); ctx.freeValue(x0p)
+  let y0p = ctx.getProp(grad, "__y0"); v = ctx.toFloat64(y0p); cs.gradY0 = float32(v); ctx.freeValue(y0p)
+  let x1p = ctx.getProp(grad, "__x1"); v = ctx.toFloat64(x1p); cs.gradX1 = float32(v); ctx.freeValue(x1p)
+  let y1p = ctx.getProp(grad, "__y1"); v = ctx.toFloat64(y1p); cs.gradY1 = float32(v); ctx.freeValue(y1p)
   # Read color stops
-  proc readComp(ctx: ptr JSContext; obj: JSValue; name: string): uint8 =
-    let p = JS_GetPropertyStr(ctx, obj, name.cstring)
-    var iv: int32
-    discard JS_ToInt32(ctx, addr iv, p)
-    rw_JS_FreeValue(ctx, p)
+  proc readComp(ctx: ptr ScriptCtx; obj: ScriptValue; name: string): uint8 =
+    let p = ctx.getProp(obj, name.cstring)
+    let iv = ctx.toInt32(p)
+    ctx.freeValue(p)
     uint8(iv and 255)
   cs.gradR0 = readComp(ctx, grad, "__c0r"); cs.gradG0 = readComp(ctx, grad, "__c0g")
   cs.gradB0 = readComp(ctx, grad, "__c0b"); cs.gradA0 = readComp(ctx, grad, "__c0a")
   cs.gradR1 = readComp(ctx, grad, "__c1r"); cs.gradG1 = readComp(ctx, grad, "__c1g")
   cs.gradB1 = readComp(ctx, grad, "__c1b"); cs.gradA1 = readComp(ctx, grad, "__c1a")
   cs.fillMode = fmGradient
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsCtx2dSetFillStylePattern(ctx: ptr JSContext; thisVal: JSValue;
-                                argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsCtx2dSetFillStylePattern(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   ## __rw_setFillStylePattern(patObj) — reads pattern data and stores in Canvas2DState
-  let cs = getCtx2DState(ctx, thisVal)
-  if cs == nil: return rw_JS_Undefined()
-  let pat = arg(argv, 0)
-  let idProp = JS_GetPropertyStr(ctx, pat, "__patId")
+  let cs = getCtx2DState(ctx, this)
+  if cs == nil: return ctx.newUndefined()
+  let pat = args[0]
+  let idProp = ctx.getProp(pat, "__patId")
   var patId: int32 = -1
-  discard JS_ToInt32(ctx, addr patId, idProp)
-  rw_JS_FreeValue(ctx, idProp)
+  patId = ctx.toInt32(idProp)
+  ctx.freeValue(idProp)
   if patId >= 0 and patId < int32(patternStore.len):
     cs.patternWidth = patternStore[patId].width
     cs.patternHeight = patternStore[patId].height
     cs.patternPixels = patternStore[patId].pixels
     cs.fillMode = fmPattern
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsResizeCanvas2D(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsResizeCanvas2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   ## __rw_resizeCanvas2D(ctxId, w, h)
   ## Resizes the native pixel buffer for a canvas2d context.
-  if argc < 3: return rw_JS_Undefined()
+  if args.len < 3: return ctx.newUndefined()
   var id, w, h: int32
-  discard JS_ToInt32(ctx, addr id, arg(argv, 0))
-  discard JS_ToInt32(ctx, addr w,  arg(argv, 1))
-  discard JS_ToInt32(ctx, addr h,  arg(argv, 2))
+  id = ctx.toInt32(args[0])
+  w = ctx.toInt32( args[1])
+  h = ctx.toInt32( args[2])
   if id >= 0 and id < int32(canvas2dStates.len) and w > 0 and h > 0:
     resizeCanvas2D(canvas2dStates[id], int(w), int(h))
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsSetCanvasVisible(ctx: ptr JSContext; thisVal: JSValue;
-                        argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsSetCanvasVisible(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   ## __rw_setCanvasVisible(ctxId, visible)
   ## Mark a canvas as a display target (rendered to screen each frame).
-  if argc < 2: return rw_JS_Undefined()
+  if args.len < 2: return ctx.newUndefined()
   var id: int32
-  discard JS_ToInt32(ctx, addr id, arg(argv, 0))
+  id = ctx.toInt32(args[0])
   if id >= 0 and id < int32(canvas2dStates.len):
     var bval: int32
-    discard JS_ToInt32(ctx, addr bval, arg(argv, 1))
+    bval = ctx.toInt32(args[1])
     canvas2dStates[id].isDisplay = bval != 0
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── __rw_createCanvas2D(canvasElement) — called from JS getContext('2d') ─
-proc jsCreateCanvas2D(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let canvasEl = arg(argv, 0)
+proc jsCreateCanvas2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let canvasEl = args[0]
   # Read canvas.width, canvas.height
-  let wProp = JS_GetPropertyStr(ctx, canvasEl, "width")
-  let hProp = JS_GetPropertyStr(ctx, canvasEl, "height")
+  let wProp = ctx.getProp(canvasEl, "width")
+  let hProp = ctx.getProp(canvasEl, "height")
   var cw, ch: int32
-  discard JS_ToInt32(ctx, addr cw, wProp)
-  discard JS_ToInt32(ctx, addr ch, hProp)
-  rw_JS_FreeValue(ctx, wProp)
-  rw_JS_FreeValue(ctx, hProp)
+  cw = ctx.toInt32(wProp)
+  ch = ctx.toInt32(hProp)
+  ctx.freeValue(wProp)
+  ctx.freeValue(hProp)
   if cw <= 0: cw = 300
   if ch <= 0: ch = 150
   # Create a new Canvas2DState
   let id = int32(canvas2dStates.len)
   canvas2dStates.add(initCanvas2DState(int(cw), int(ch)))
-  canvas2dStates[id].canvasJsVal = rw_JS_DupValue(ctx, canvasEl)
+  canvas2dStates[id].canvasJsVal = ctx.dupValue(canvasEl)
   # If this element was appended to document.body before getContext was called,
   # the JS setter set _isDisplayCanvas=true. Check and mark the state.
-  let dispProp = JS_GetPropertyStr(ctx, canvasEl, "_isDisplayCanvas")
-  let dispTag = rw_JS_VALUE_GET_TAG(dispProp)
-  if dispTag != JS_TAG_NULL_C and dispTag != JS_TAG_UNDEFINED_C:
+  let dispProp = ctx.getProp(canvasEl, "_isDisplayCanvas")
+  if not ctx.isNull(dispProp) and not ctx.isUndefined(dispProp):
     var bval: int32
-    discard JS_ToInt32(ctx, addr bval, dispProp)
+    bval = ctx.toInt32(dispProp)
     if bval != 0:
       canvas2dStates[id].isDisplay = true
-  rw_JS_FreeValue(ctx, dispProp)
+  ctx.freeValue(dispProp)
   # Store __ctxId on the canvas element so texImage2D can find the pixel data
-  discard JS_SetPropertyStr(ctx, canvasEl, "__ctxId", rw_JS_NewInt32(ctx, id))
+  ctx.setPropSteal(canvasEl, "__ctxId", ctx.newInt(id))
   # Build the context object with all methods
-  let ctxObj = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, ctxObj, "__ctxId", rw_JS_NewInt32(ctx, id))
+  let ctxObj = ctx.newObject()
+  ctx.setPropSteal(ctxObj, "__ctxId", ctx.newInt(id))
 
-  template c2dFn(name: string; fn: JSCFunction; arity: int) =
-    discard JS_SetPropertyStr(ctx, ctxObj, name,
-              JS_NewCFunction(ctx, fn, name, cint(arity)))
+  template c2dFn(name: string; fn: ScriptNativeProc; arity: int) =
+    ctx.bindMethod(ctxObj, name, fn, arity)
 
   c2dFn("clearRect",   jsCtx2dClearRect, 4)
   c2dFn("fillRect",    jsCtx2dFillRect, 4)
@@ -1266,20 +1420,14 @@ proc jsCreateCanvas2D(ctx: ptr JSContext; thisVal: JSValue;
 
   ctxObj
 
-proc bindCanvas2D(state: ptr RWebviewState) =
+proc bindCanvas2D*(ctx: ptr ScriptCtx) =
   ## Bind the __rw_createCanvas2D global function.
-  let ctx = state.jsCtx
-  let global = JS_GetGlobalObject(ctx)
-  discard JS_SetPropertyStr(ctx, global, "__rw_createCanvas2D",
-            JS_NewCFunction(ctx, jsCreateCanvas2D, "__rw_createCanvas2D", 1))
-  discard JS_SetPropertyStr(ctx, global, "__rw_resizeCanvas2D",
-            JS_NewCFunction(ctx, jsResizeCanvas2D, "__rw_resizeCanvas2D", 3))
-  discard JS_SetPropertyStr(ctx, global, "__rw_setCanvasVisible",
-            JS_NewCFunction(ctx, jsSetCanvasVisible, "__rw_setCanvasVisible", 2))
-  rw_JS_FreeValue(ctx, global)
+  ctx.bindGlobal("__rw_createCanvas2D", jsCreateCanvas2D, 1)
+  ctx.bindGlobal("__rw_resizeCanvas2D", jsResizeCanvas2D, 3)
+  ctx.bindGlobal("__rw_setCanvasVisible", jsSetCanvasVisible, 2)
   # Free and reset canvas2d states for new page
   for cs in canvas2dStates:
-    rw_JS_FreeValue(ctx, cs.canvasJsVal)
+    ctx.freeValue(cs.canvasJsVal)
   canvas2dStates = @[]
   patternStore = @[]
 

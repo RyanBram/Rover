@@ -1,6 +1,46 @@
-﻿# ===========================================================================
-# Phase 4 — OpenGL types, function pointers, and loader
-# ===========================================================================
+﻿# =============================================================================
+# rwebview_gl.nim
+# OpenGL types, function pointers, and loader
+# =============================================================================
+#
+# Author    : Ryan Bramantya
+# Copyright : Copyright (c) 2026 Ryan Bramantya
+# License   : Apache License 2.0
+# Website   : https://github.com/RyanBram/Rover
+#
+# -----------------------------------------------------------------------------
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+# implied. See the License for the specific language governing
+# permissions and limitations under the License.
+#
+# -----------------------------------------------------------------------------
+#
+# Description:
+#   OpenGL types, function pointers, and WebGL JSCFunction callbacks.
+#
+# Documentation:
+#   See [Documentation] section at the bottom of this file.
+#
+# -----------------------------------------------------------------------------
+#
+# Included by:
+#   - rgss_quickjs_ffi         # JS helpers
+#   - rwebview_canvas2d        # Canvas2D state variables
+#   - rwebview_ffi_sdl3        # SDL_GL_GetProcAddress
+#
+# Used by:
+#   - rwebview.nim             # included after rwebview_canvas2d.nim
+#
+# =============================================================================
 
 type
   GLenum     = uint32
@@ -59,6 +99,7 @@ var
   glCompileShader:   proc(shader: GLuint) {.cdecl.}
   glGetShaderiv:     proc(shader: GLuint; pname: GLenum; params: ptr GLint) {.cdecl.}
   glGetShaderInfoLog: proc(shader: GLuint; maxLen: GLsizei; length: ptr GLsizei; log: cstring) {.cdecl.}
+  glGetShaderSource:  proc(shader: GLuint; maxLen: GLsizei; length: ptr GLsizei; source: cstring) {.cdecl.}
   glCreateProgram:   proc(): GLuint {.cdecl.}
   glDeleteProgram:   proc(program: GLuint) {.cdecl.}
   glAttachShader:    proc(program, shader: GLuint) {.cdecl.}
@@ -158,9 +199,319 @@ var
 # Default VAO handle (Core Profile requires a VAO to be bound at all times)
 var glDefaultVAO: GLuint = 0
 
+# WebGL drawing buffer (off-screen FBO) — emulates the browser's canvas
+# drawing buffer.  WebGL apps render to this FBO; we composite it to the
+# actual window with letterboxing each frame.
+var glDrawingFBO: GLuint = 0
+var glDrawingColorTex: GLuint = 0
+var glDrawingDepthStencilRBO: GLuint = 0
+var glDrawingBufW*: int = 0
+var glDrawingBufH*: int = 0
+var glJSBoundFBO: GLuint = 0   # FBO that JS *thinks* is bound (0 = default)
+var gWebGLActive*: bool = false  # true once WebGL drawing buffer is ready
+var gForceCanvasMode*: bool = false  # set by __rw_setForceCanvas() when renderer=canvas
+
 # WebGL-specific pixelStorei state (no OpenGL equivalent)
 var glUnpackFlipY: bool = false
 var glUnpackPremultiplyAlpha: bool = false
+
+# ── WebGL State Cache ──────────────────────────────────────────────────
+# Shadows GL state to skip redundant driver calls.  Every real browser
+# (Chrome, Firefox, Safari) maintains an identical shadow cache — when JS
+# calls gl.bindTexture() with the already-bound texture, the browser skips
+# the actual driver call.  This is standard WebGL implementation behaviour,
+# not an application-specific hack.
+
+const glCacheSentinel = 0xFFFFFFFF'u32  # "unknown / not yet set"
+
+# Capability enable/disable  (-1 = unknown, 0 = disabled, 1 = enabled)
+var glCapState: array[10, int8]
+
+proc glCapIndex(cap: GLenum): int {.inline.} =
+  case uint32(cap)
+  of 0x0BE2'u32: 0   # GL_BLEND
+  of 0x0B44'u32: 1   # GL_CULL_FACE
+  of 0x0B71'u32: 2   # GL_DEPTH_TEST
+  of 0x0BD0'u32: 3   # GL_DITHER
+  of 0x8037'u32: 4   # GL_POLYGON_OFFSET_FILL
+  of 0x809E'u32: 5   # GL_SAMPLE_ALPHA_TO_COVERAGE
+  of 0x80A0'u32: 6   # GL_SAMPLE_COVERAGE
+  of 0x0C11'u32: 7   # GL_SCISSOR_TEST
+  of 0x0B90'u32: 8   # GL_STENCIL_TEST
+  of 0x8C89'u32: 9   # GL_RASTERIZER_DISCARD
+  else: -1
+
+# Program
+var glCacheProgram: GLuint = 0
+
+# Texture binding (per unit, max 16 units tracked)
+var glCacheActiveTexUnit: GLenum = 0x84C0.GLenum   # GL_TEXTURE0
+var glCacheBoundTex2D: array[16, GLuint]
+
+# Blend
+var glCacheBlendSrcRGB: GLenum = GLenum(glCacheSentinel)
+var glCacheBlendDstRGB: GLenum = GLenum(glCacheSentinel)
+var glCacheBlendSrcA:   GLenum = GLenum(glCacheSentinel)
+var glCacheBlendDstA:   GLenum = GLenum(glCacheSentinel)
+var glCacheBlendEqRGB:  GLenum = GLenum(glCacheSentinel)
+var glCacheBlendEqA:    GLenum = GLenum(glCacheSentinel)
+
+# Viewport
+var glCacheVpX: GLint = -1
+var glCacheVpY: GLint = -1
+var glCacheVpW: GLsizei = -1
+var glCacheVpH: GLsizei = -1
+
+# Scissor
+var glCacheScX: GLint = -1
+var glCacheScY: GLint = -1
+var glCacheScW: GLsizei = -1
+var glCacheScH: GLsizei = -1
+
+# Buffer binding
+var glCacheArrayBuf:   GLuint = 0
+var glCacheElementBuf: GLuint = 0
+
+# Depth / Color mask
+var glCacheDepthMask: int8 = -1   # -1 = unknown, 0 = false, 1 = true
+var glCacheColorMask: array[4, int8]  # per component
+
+proc resetGLStateCache*() =
+  ## Reset all shadow state to "unknown".  Called at init time.
+  for i in 0..<glCapState.len: glCapState[i] = -1
+  glCacheProgram = 0
+  glCacheActiveTexUnit = 0x84C0.GLenum
+  for i in 0..<glCacheBoundTex2D.len: glCacheBoundTex2D[i] = 0
+  glCacheBlendSrcRGB = GLenum(glCacheSentinel)
+  glCacheBlendDstRGB = GLenum(glCacheSentinel)
+  glCacheBlendSrcA   = GLenum(glCacheSentinel)
+  glCacheBlendDstA   = GLenum(glCacheSentinel)
+  glCacheBlendEqRGB  = GLenum(glCacheSentinel)
+  glCacheBlendEqA    = GLenum(glCacheSentinel)
+  glCacheVpX = -1; glCacheVpY = -1; glCacheVpW = -1; glCacheVpH = -1
+  glCacheScX = -1; glCacheScY = -1; glCacheScW = -1; glCacheScH = -1
+  glCacheArrayBuf = 0; glCacheElementBuf = 0
+  glCacheDepthMask = -1
+  for i in 0..<glCacheColorMask.len: glCacheColorMask[i] = -1
+
+# -- Helper: apply WebGL UNPACK pixel transformations -------------------------
+
+proc applyUnpackTransform(srcData: pointer; w, h: int): seq[uint8] =
+  ## Copy pixel data, applying UNPACK_PREMULTIPLY_ALPHA and/or UNPACK_FLIP_Y.
+  ## Returns the transformed copy (RGBA, UNSIGNED_BYTE assumed).
+  ## Only call when at least one flag is true.
+  let rowBytes = w * 4
+  let total = rowBytes * h
+  result = newSeq[uint8](total)
+  let src = cast[ptr UncheckedArray[uint8]](srcData)
+  for y in 0..<h:
+    let srcY = if glUnpackFlipY: h - 1 - y else: y
+    let srcOff = srcY * rowBytes
+    let dstOff = y * rowBytes
+    if glUnpackPremultiplyAlpha:
+      for x in 0..<w:
+        let si = srcOff + x * 4
+        let di = dstOff + x * 4
+        let a = int(src[si + 3])
+        if a == 255:
+          # Fully opaque — no change needed (R * 255/255 = R)
+          result[di]     = src[si]
+          result[di + 1] = src[si + 1]
+          result[di + 2] = src[si + 2]
+          result[di + 3] = 255
+        elif a == 0:
+          # Fully transparent — RGB must be zeroed (R * 0/255 = 0)
+          result[di]     = 0
+          result[di + 1] = 0
+          result[di + 2] = 0
+          result[di + 3] = 0
+        else:
+          result[di]     = uint8((int(src[si])     * a + 127) div 255)
+          result[di + 1] = uint8((int(src[si + 1]) * a + 127) div 255)
+          result[di + 2] = uint8((int(src[si + 2]) * a + 127) div 255)
+          result[di + 3] = uint8(a)
+    else:
+      copyMem(addr result[dstOff], unsafeAddr src[srcOff], rowBytes)
+
+proc glUploadTexImage(target: GLenum; level: GLint; ifmt: GLint;
+                      width, height: GLsizei; border: GLint;
+                      fmt: GLenum; typ: GLenum; srcData: pointer) =
+  ## texImage2D wrapper that applies UNPACK transformations when needed.
+  if srcData == nil:
+    glTexImage2D(target, level, ifmt, width, height, border, fmt, typ, nil)
+    return
+  if not glUnpackPremultiplyAlpha and not glUnpackFlipY:
+    glTexImage2D(target, level, ifmt, width, height, border, fmt, typ, srcData)
+    return
+  var tmp = applyUnpackTransform(srcData, int(width), int(height))
+  glTexImage2D(target, level, ifmt, width, height, border, fmt, typ, addr tmp[0])
+
+proc glUploadTexSub(target: GLenum; level: GLint;
+                    xoff, yoff: GLint; width, height: GLsizei;
+                    fmt: GLenum; typ: GLenum; srcData: pointer) =
+  ## texSubImage2D wrapper that applies UNPACK transformations when needed.
+  if srcData == nil: return
+  if not glUnpackPremultiplyAlpha and not glUnpackFlipY:
+    glTexSubImage2D(target, level, xoff, yoff, width, height, fmt, typ, srcData)
+    return
+  var tmp = applyUnpackTransform(srcData, int(width), int(height))
+  glTexSubImage2D(target, level, xoff, yoff, width, height, fmt, typ, addr tmp[0])
+
+# -- Drawing buffer FBO management -------------------------------------------
+
+proc initDrawingBuffer*(w, h: int) =
+  ## Create or resize the WebGL drawing buffer FBO (color + depth/stencil).
+  if w <= 0 or h <= 0: return
+  if w == glDrawingBufW and h == glDrawingBufH and glDrawingFBO != 0: return
+  if glDrawingFBO == 0:
+    glGenFramebuffers(1, addr glDrawingFBO)
+    glGenTextures(1, addr glDrawingColorTex)
+    glGenRenderbuffers(1, addr glDrawingDepthStencilRBO)
+  # Color texture
+  glBindTexture(0x0DE1.GLenum, glDrawingColorTex)   # GL_TEXTURE_2D
+  glTexImage2D(0x0DE1.GLenum, 0, 0x8058.GLint,      # GL_RGBA8
+               GLsizei(w), GLsizei(h), 0,
+               0x1908.GLenum, 0x1401.GLenum, nil)    # RGBA, UNSIGNED_BYTE
+  glTexParameteri(0x0DE1.GLenum, 0x2800.GLenum, 0x2601.GLint)  # MAG=LINEAR
+  glTexParameteri(0x0DE1.GLenum, 0x2801.GLenum, 0x2601.GLint)  # MIN=LINEAR
+  glTexParameteri(0x0DE1.GLenum, 0x2802.GLenum, 0x812F.GLint)  # WRAP_S=CLAMP
+  glTexParameteri(0x0DE1.GLenum, 0x2803.GLenum, 0x812F.GLint)  # WRAP_T=CLAMP
+  # Depth + stencil renderbuffer
+  glBindRenderbuffer(0x8D41.GLenum, glDrawingDepthStencilRBO)   # GL_RENDERBUFFER
+  glRenderbufferStorage(0x8D41.GLenum, 0x88F0.GLenum,          # GL_DEPTH24_STENCIL8
+                        GLsizei(w), GLsizei(h))
+  # Attach to FBO
+  glBindFramebuffer(0x8D40.GLenum, glDrawingFBO)                # GL_FRAMEBUFFER
+  glFramebufferTexture2D(0x8D40.GLenum, 0x8CE0.GLenum,         # COLOR_ATTACHMENT0
+                         0x0DE1.GLenum, glDrawingColorTex, 0)
+  glFramebufferRenderbuffer(0x8D40.GLenum, 0x821A.GLenum,      # DEPTH_STENCIL_ATTACHMENT
+                            0x8D41.GLenum, glDrawingDepthStencilRBO)
+  let status = glCheckFramebufferStatus(0x8D40.GLenum)
+  if status != 0x8CD5.GLenum:   # GL_FRAMEBUFFER_COMPLETE
+    stderr.writeLine("[webgl] Drawing buffer FBO incomplete: 0x" &
+                     toHex(int(status), 4))
+  else:
+    stderr.writeLine("[webgl] Drawing buffer FBO " & $w & "x" & $h & " OK")
+  glDrawingBufW = w
+  glDrawingBufH = h
+  # Clear FBO to defined state so compositing shows clean content
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f)
+  glClear(0x4000.GLbitfield or 0x0100.GLbitfield or 0x0400.GLbitfield)  # COLOR | DEPTH | STENCIL
+  # NOTE: do NOT set gWebGLActive here.  The FBO is created on the first
+  # getContext('webgl') call — which may come from a throwaway detection
+  # canvas (e.g. GPU vendor query), not from the real display canvas.
+  # gWebGLActive is set later by __rw_setWebGLActive(), called from
+  # dom_preamble.js when a WebGL canvas is appended to document.body.
+  # Leave drawing buffer FBO bound (JS expects "default" = our FBO)
+
+proc jsSetWebGLActive(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ## __rw_setWebGLActive() — called from dom_preamble.js when a WebGL canvas
+  ## is appended to document.body.  Only then do we switch presentAllCanvas2D
+  ## to the WebGL compositing path.  Calling getContext('webgl') on a
+  ## throwaway detection canvas must NOT activate WebGL mode.
+  ## Ignored when forceCanvas mode is active.
+  if not gForceCanvasMode:
+    gWebGLActive = true
+  ctx.newUndefined()
+
+proc jsSetForceCanvas(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ## __rw_setForceCanvas() — called from the injected preamble when
+  ## renderer=canvas is set in package.json.  Blocks any later WebGL
+  ## activation and lets the F2 overlay label the mode clearly.
+  gForceCanvasMode = true
+  ctx.newUndefined()
+
+proc jsResizeDrawingBuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ## __rw_resizeDrawingBuffer(w, h) — called when canvas width/height changes
+  if args.len < 2: return ctx.newUndefined()
+  let w = int(ctx.toInt32(args[0]))
+  let h = int(ctx.toInt32(args[1]))
+  if w > 0 and h > 0:
+    initDrawingBuffer(w, h)
+  ctx.newUndefined()
+
+# -- Helpers: GL handle wrappers for ScriptCtx --
+
+proc jsNewGLHandle(ctx: ptr ScriptCtx; id: uint32): ScriptValue =
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "__id", ctx.newInt(int32(id)))
+  obj
+
+proc jsNewGLLocHandle(ctx: ptr ScriptCtx; loc: int32): ScriptValue =
+  if loc < 0: return ctx.newNull()
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "__id", ctx.newInt(loc))
+  obj
+
+proc jsGetGLId(ctx: ptr ScriptCtx; v: ScriptValue): uint32 =
+  if ctx.isNull(v) or ctx.isUndefined(v): return 0
+  let idVal = ctx.getProp(v, "__id")
+  result = uint32(ctx.toInt32(idVal))
+  ctx.freeValue(idVal)
+
+proc jsGetGLLocId(ctx: ptr ScriptCtx; v: ScriptValue): int32 =
+  if ctx.isNull(v) or ctx.isUndefined(v): return -1
+  let idVal = ctx.getProp(v, "__id")
+  result = ctx.toInt32(idVal)
+  ctx.freeValue(idVal)
+
+# -- Helpers: extract float/int array from either TypedArray or plain JS Array --
+
+proc jsGetFloatArray(ctx: ptr ScriptCtx; v: ScriptValue;
+                     buf: var seq[GLfloat]): bool =
+  ## Try jsGetBufferData first (TypedArray/ArrayBuffer); if that fails,
+  ## iterate a plain JS Array and extract float values into buf.
+  ## Returns true if buf has data.
+  var size: int
+  let data = ctx.getArrayBufferData(v, size)
+  if data != nil:
+    let count = int(size) div sizeof(GLfloat)
+    buf.setLen(count)
+    if count > 0:
+      copyMem(addr buf[0], data, count * sizeof(GLfloat))
+    return count > 0
+  # Fallback: plain JS Array
+  let lenVal = ctx.getProp(v, "length")
+  var arrLen: int32
+  arrLen = ctx.toInt32(lenVal)
+  ctx.freeValue(lenVal)
+  if arrLen <= 0: return false
+  buf.setLen(arrLen)
+  for i in 0..<arrLen:
+    let el = ctx.getIndex(v, uint32(uint32(i)))
+    var f: float64
+    f = ctx.toFloat64(el)
+    ctx.freeValue(el)
+    buf[i] = GLfloat(f)
+  true
+
+proc jsGetIntArray(ctx: ptr ScriptCtx; v: ScriptValue;
+                   buf: var seq[GLint]): bool =
+  ## Same as jsGetFloatArray but for int32 uniforms.
+  var size: int
+  let data = ctx.getArrayBufferData(v, size)
+  if data != nil:
+    let count = int(size) div sizeof(GLint)
+    buf.setLen(count)
+    if count > 0:
+      copyMem(addr buf[0], data, count * sizeof(GLint))
+    return count > 0
+  let lenVal = ctx.getProp(v, "length")
+  var arrLen: int32
+  arrLen = ctx.toInt32(lenVal)
+  ctx.freeValue(lenVal)
+  if arrLen <= 0: return false
+  buf.setLen(arrLen)
+  for i in 0..<arrLen:
+    let el = ctx.getIndex(v, uint32(uint32(i)))
+    var iv: int32
+    iv = ctx.toInt32(el)
+    ctx.freeValue(el)
+    buf[i] = GLint(iv)
+  true
 
 proc loadGLProcs() =
   ## Load all OpenGL function pointers via SDL_GL_GetProcAddress.
@@ -184,7 +535,7 @@ proc loadGLProcs() =
   load(glGetBooleanv); load(glGetString); load(glIsEnabled)
   load(glCreateShader); load(glDeleteShader)
   load(glShaderSource); load(glCompileShader)
-  load(glGetShaderiv); load(glGetShaderInfoLog)
+  load(glGetShaderiv); load(glGetShaderInfoLog); load(glGetShaderSource)
   load(glCreateProgram); load(glDeleteProgram)
   load(glAttachShader); load(glDetachShader); load(glLinkProgram)
   load(glGetProgramiv); load(glGetProgramInfoLog)
@@ -228,152 +579,207 @@ proc loadGLProcs() =
 
 # ── State management ────────────────────────────────────────────────────────
 
-proc jsGlViewport(ctx: ptr JSContext; thisVal: JSValue;
-                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glViewport(GLint(argI32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-             GLsizei(argI32(ctx, argv, 2)), GLsizei(argI32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlViewport(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let x = GLint(ctx.toInt32(args[0]))
+  let y = GLint(ctx.toInt32(args[1]))
+  let w = GLsizei(ctx.toInt32(args[2]))
+  let h = GLsizei(ctx.toInt32(args[3]))
+  if x == glCacheVpX and y == glCacheVpY and w == glCacheVpW and h == glCacheVpH:
+    return ctx.newUndefined()
+  glViewport(x, y, w, h)
+  glCacheVpX = x; glCacheVpY = y; glCacheVpW = w; glCacheVpH = h
+  ctx.newUndefined()
 
-proc jsGlClearColor(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glClearColor(argF32(ctx, argv, 0), argF32(ctx, argv, 1),
-               argF32(ctx, argv, 2), argF32(ctx, argv, 3))
-  rw_JS_Undefined()
+proc jsGlClearColor(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glClearColor(float32(ctx.toFloat64(args[0])), float32(ctx.toFloat64(args[1])),
+               float32(ctx.toFloat64(args[2])), float32(ctx.toFloat64(args[3])))
+  ctx.newUndefined()
 
-proc jsGlClear(ctx: ptr JSContext; thisVal: JSValue;
-               argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glClear(GLbitfield(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlClear(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glClear(GLbitfield(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlEnable(ctx: ptr JSContext; thisVal: JSValue;
-                argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glEnable(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlEnable(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cap = GLenum(ctx.toUint32(args[0]))
+  let idx = glCapIndex(cap)
+  if idx >= 0:
+    if glCapState[idx] == 1: return ctx.newUndefined()
+    glCapState[idx] = 1
+  glEnable(cap)
+  ctx.newUndefined()
 
-proc jsGlDisable(ctx: ptr JSContext; thisVal: JSValue;
-                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDisable(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlDisable(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cap = GLenum(ctx.toUint32(args[0]))
+  let idx = glCapIndex(cap)
+  if idx >= 0:
+    if glCapState[idx] == 0: return ctx.newUndefined()
+    glCapState[idx] = 0
+  glDisable(cap)
+  ctx.newUndefined()
 
-proc jsGlBlendFunc(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBlendFunc(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)))
-  rw_JS_Undefined()
+proc jsGlBlendFunc(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let src = GLenum(ctx.toUint32(args[0]))
+  let dst = GLenum(ctx.toUint32(args[1]))
+  if src == glCacheBlendSrcRGB and dst == glCacheBlendDstRGB and
+     src == glCacheBlendSrcA and dst == glCacheBlendDstA:
+    return ctx.newUndefined()
+  glBlendFunc(src, dst)
+  glCacheBlendSrcRGB = src; glCacheBlendDstRGB = dst
+  glCacheBlendSrcA = src; glCacheBlendDstA = dst
+  ctx.newUndefined()
 
-proc jsGlBlendFuncSeparate(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBlendFuncSeparate(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                      GLenum(argU32(ctx, argv, 2)), GLenum(argU32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlBlendFuncSeparate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let srcRGB = GLenum(ctx.toUint32(args[0]))
+  let dstRGB = GLenum(ctx.toUint32(args[1]))
+  let srcA   = GLenum(ctx.toUint32(args[2]))
+  let dstA   = GLenum(ctx.toUint32(args[3]))
+  if srcRGB == glCacheBlendSrcRGB and dstRGB == glCacheBlendDstRGB and
+     srcA == glCacheBlendSrcA and dstA == glCacheBlendDstA:
+    return ctx.newUndefined()
+  glBlendFuncSeparate(srcRGB, dstRGB, srcA, dstA)
+  glCacheBlendSrcRGB = srcRGB; glCacheBlendDstRGB = dstRGB
+  glCacheBlendSrcA = srcA; glCacheBlendDstA = dstA
+  ctx.newUndefined()
 
-proc jsGlBlendEquation(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBlendEquation(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlBlendEquation(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let mode = GLenum(ctx.toUint32(args[0]))
+  if mode == glCacheBlendEqRGB and mode == glCacheBlendEqA:
+    return ctx.newUndefined()
+  glBlendEquation(mode)
+  glCacheBlendEqRGB = mode; glCacheBlendEqA = mode
+  ctx.newUndefined()
 
-proc jsGlBlendEquationSeparate(ctx: ptr JSContext; thisVal: JSValue;
-                               argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBlendEquationSeparate(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)))
-  rw_JS_Undefined()
+proc jsGlBlendEquationSeparate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let modeRGB = GLenum(ctx.toUint32(args[0]))
+  let modeA   = GLenum(ctx.toUint32(args[1]))
+  if modeRGB == glCacheBlendEqRGB and modeA == glCacheBlendEqA:
+    return ctx.newUndefined()
+  glBlendEquationSeparate(modeRGB, modeA)
+  glCacheBlendEqRGB = modeRGB; glCacheBlendEqA = modeA
+  ctx.newUndefined()
 
-proc jsGlBlendColor(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBlendColor(argF32(ctx, argv, 0), argF32(ctx, argv, 1),
-               argF32(ctx, argv, 2), argF32(ctx, argv, 3))
-  rw_JS_Undefined()
+proc jsGlBlendColor(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glBlendColor(float32(ctx.toFloat64(args[0])), float32(ctx.toFloat64(args[1])),
+               float32(ctx.toFloat64(args[2])), float32(ctx.toFloat64(args[3])))
+  ctx.newUndefined()
 
-proc jsGlDepthFunc(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDepthFunc(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlDepthFunc(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDepthFunc(GLenum(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlDepthMask(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDepthMask(GLboolean(if argBool(ctx, argv, 0): 1 else: 0))
-  rw_JS_Undefined()
+proc jsGlDepthMask(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let flag = ctx.toBool(args[0])
+  let val: int8 = if flag: 1 else: 0
+  if val == glCacheDepthMask: return ctx.newUndefined()
+  glDepthMask(GLboolean(val))
+  glCacheDepthMask = val
+  ctx.newUndefined()
 
-proc jsGlDepthRange(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDepthRange(argF64(ctx, argv, 0), argF64(ctx, argv, 1))
-  rw_JS_Undefined()
+proc jsGlDepthRange(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDepthRange(ctx.toFloat64(args[0]), ctx.toFloat64(args[1]))
+  ctx.newUndefined()
 
-proc jsGlClearDepth(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glClearDepth(argF64(ctx, argv, 0))
-  rw_JS_Undefined()
+proc jsGlClearDepth(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glClearDepth(ctx.toFloat64(args[0]))
+  ctx.newUndefined()
 
-proc jsGlCullFace(ctx: ptr JSContext; thisVal: JSValue;
-                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glCullFace(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlCullFace(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glCullFace(GLenum(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlFrontFace(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glFrontFace(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlFrontFace(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glFrontFace(GLenum(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlScissor(ctx: ptr JSContext; thisVal: JSValue;
-                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glScissor(GLint(argI32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-            GLsizei(argI32(ctx, argv, 2)), GLsizei(argI32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlScissor(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let x = GLint(ctx.toInt32(args[0]))
+  let y = GLint(ctx.toInt32(args[1]))
+  let w = GLsizei(ctx.toInt32(args[2]))
+  let h = GLsizei(ctx.toInt32(args[3]))
+  if x == glCacheScX and y == glCacheScY and w == glCacheScW and h == glCacheScH:
+    return ctx.newUndefined()
+  glScissor(x, y, w, h)
+  glCacheScX = x; glCacheScY = y; glCacheScW = w; glCacheScH = h
+  ctx.newUndefined()
 
-proc jsGlLineWidth(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glLineWidth(argF32(ctx, argv, 0))
-  rw_JS_Undefined()
+proc jsGlLineWidth(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glLineWidth(float32(ctx.toFloat64(args[0])))
+  ctx.newUndefined()
 
-proc jsGlColorMask(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glColorMask(GLboolean(if argBool(ctx, argv, 0): 1 else: 0),
-              GLboolean(if argBool(ctx, argv, 1): 1 else: 0),
-              GLboolean(if argBool(ctx, argv, 2): 1 else: 0),
-              GLboolean(if argBool(ctx, argv, 3): 1 else: 0))
-  rw_JS_Undefined()
+proc jsGlColorMask(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let r: int8 = if ctx.toBool(args[0]): 1 else: 0
+  let g: int8 = if ctx.toBool(args[1]): 1 else: 0
+  let b: int8 = if ctx.toBool(args[2]): 1 else: 0
+  let a: int8 = if ctx.toBool(args[3]): 1 else: 0
+  if r == glCacheColorMask[0] and g == glCacheColorMask[1] and
+     b == glCacheColorMask[2] and a == glCacheColorMask[3]:
+    return ctx.newUndefined()
+  glColorMask(GLboolean(r), GLboolean(g), GLboolean(b), GLboolean(a))
+  glCacheColorMask = [r, g, b, a]
+  ctx.newUndefined()
 
-proc jsGlStencilFunc(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glStencilFunc(GLenum(argU32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-                GLuint(argU32(ctx, argv, 2)))
-  rw_JS_Undefined()
+proc jsGlStencilFunc(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glStencilFunc(GLenum(ctx.toUint32(args[0])), GLint(ctx.toInt32(args[1])),
+                GLuint(ctx.toUint32(args[2])))
+  ctx.newUndefined()
 
-proc jsGlStencilFuncSeparate(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glStencilFuncSeparate(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                        GLint(argI32(ctx, argv, 2)), GLuint(argU32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlStencilFuncSeparate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glStencilFuncSeparate(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                        GLint(ctx.toInt32(args[2])), GLuint(ctx.toUint32(args[3])))
+  ctx.newUndefined()
 
-proc jsGlStencilOp(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glStencilOp(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-              GLenum(argU32(ctx, argv, 2)))
-  rw_JS_Undefined()
+proc jsGlStencilOp(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glStencilOp(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+              GLenum(ctx.toUint32(args[2])))
+  ctx.newUndefined()
 
-proc jsGlStencilOpSeparate(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glStencilOpSeparate(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                      GLenum(argU32(ctx, argv, 2)), GLenum(argU32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlStencilOpSeparate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glStencilOpSeparate(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                      GLenum(ctx.toUint32(args[2])), GLenum(ctx.toUint32(args[3])))
+  ctx.newUndefined()
 
-proc jsGlStencilMask(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glStencilMask(GLuint(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlStencilMask(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glStencilMask(GLuint(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlStencilMaskSeparate(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glStencilMaskSeparate(GLenum(argU32(ctx, argv, 0)), GLuint(argU32(ctx, argv, 1)))
-  rw_JS_Undefined()
+proc jsGlStencilMaskSeparate(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glStencilMaskSeparate(GLenum(ctx.toUint32(args[0])), GLuint(ctx.toUint32(args[1])))
+  ctx.newUndefined()
 
-proc jsGlClearStencil(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glClearStencil(GLint(argI32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlClearStencil(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glClearStencil(GLint(ctx.toInt32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlPixelStorei(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let pname = GLenum(argU32(ctx, argv, 0))
-  let param = argI32(ctx, argv, 1)
+proc jsGlPixelStorei(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let pname = GLenum(ctx.toUint32(args[0]))
+  let param = ctx.toInt32(args[1])
   # Handle WebGL-specific pixel storage params
   if pname == 0x9240'u32:   # UNPACK_FLIP_Y_WEBGL
     glUnpackFlipY = param != 0
@@ -383,42 +789,46 @@ proc jsGlPixelStorei(ctx: ptr JSContext; thisVal: JSValue;
     discard  # no-op
   else:
     glPixelStorei(pname, GLint(param))
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlFlush(ctx: ptr JSContext; thisVal: JSValue;
-               argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlFlush(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   glFlush()
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlFinish(ctx: ptr JSContext; thisVal: JSValue;
-                argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlFinish(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   glFinish()
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlGetError(ctx: ptr JSContext; thisVal: JSValue;
-                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_NewInt32(ctx, int32(glGetError()))
+proc jsGlGetError(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ctx.newInt(int32(glGetError()))
 
-proc jsGlIsEnabled(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_NewBool(ctx, cint(glIsEnabled(GLenum(argU32(ctx, argv, 0)))))
+proc jsGlIsEnabled(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let cap = GLenum(ctx.toUint32(args[0]))
+  let idx = glCapIndex(cap)
+  if idx >= 0 and glCapState[idx] >= 0:
+    return ctx.newBool(bool(cint(glCapState[idx])))
+  ctx.newBool(bool(cint(glIsEnabled(cap))))
 
 # ── Shaders ──────────────────────────────────────────────────────────────
 
-proc jsGlCreateShader(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let id = glCreateShader(GLenum(argU32(ctx, argv, 0)))
+proc jsGlCreateShader(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let id = glCreateShader(GLenum(ctx.toUint32(args[0])))
   jsNewGLHandle(ctx, id)
 
-proc jsGlDeleteShader(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDeleteShader(GLuint(jsGetGLId(ctx, arg(argv, 0))))
-  rw_JS_Undefined()
+proc jsGlDeleteShader(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDeleteShader(GLuint(jsGetGLId(ctx, args[0])))
+  ctx.newUndefined()
 
-proc jsGlShaderSource(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let shader = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  var src = argStr(ctx, argv, 1)
+proc jsGlShaderSource(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let shader = GLuint(jsGetGLId(ctx, args[0]))
+  var src = ctx.toNimString(args[1])
   # Preprocess GLSL ES → desktop GLSL 3.30 Core:
   # 1. Strip 'precision mediump/highp/lowp float/int;' lines
   # 2. Add #version 330 core if not present
@@ -458,715 +868,988 @@ proc jsGlShaderSource(ctx: ptr JSContext; thisVal: JSValue;
   var csrc = cstring(src)
   var slen = GLint(src.len)
   glShaderSource(shader, 1, addr csrc, addr slen)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlCompileShader(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glCompileShader(GLuint(jsGetGLId(ctx, arg(argv, 0))))
-  rw_JS_Undefined()
+proc jsGlCompileShader(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let id = GLuint(jsGetGLId(ctx, args[0]))
+  glCompileShader(id)
+  # Diagnostic: log compilation errors so shader failures are visible
+  var status: GLint
+  glGetShaderiv(id, 0x8B81'u32, addr status)  # GL_COMPILE_STATUS
+  if status == 0:
+    var logLen: GLint
+    glGetShaderiv(id, 0x8B84'u32, addr logLen)  # GL_INFO_LOG_LENGTH
+    if logLen > 0:
+      var buf = newString(logLen)
+      glGetShaderInfoLog(id, GLsizei(logLen), nil, cstring(buf))
+      stderr.writeLine("[GL] shader compile FAILED (id=" & $id & "): " & buf)
+    else:
+      stderr.writeLine("[GL] shader compile FAILED (id=" & $id & ") (no info log)")
+    # Also dump the translated source for diagnosis
+    var srcLen: GLint
+    glGetShaderiv(id, 0x8B88'u32, addr srcLen)  # GL_SHADER_SOURCE_LENGTH
+    if srcLen > 0:
+      var srcBuf = newString(srcLen)
+      glGetShaderSource(id, GLsizei(srcLen), nil, cstring(srcBuf))
+      stderr.writeLine("[GL] shader source:\n" & srcBuf)
+  ctx.newUndefined()
 
-proc jsGlGetShaderParameter(ctx: ptr JSContext; thisVal: JSValue;
-                            argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let shader = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  let pname = GLenum(argU32(ctx, argv, 1))
+proc jsGlGetShaderParameter(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let shader = GLuint(jsGetGLId(ctx, args[0]))
+  let pname = GLenum(ctx.toUint32(args[1]))
   var v: GLint
   glGetShaderiv(shader, pname, addr v)
   if pname == 0x8B81'u32 or pname == 0x8B80'u32:  # COMPILE_STATUS, DELETE_STATUS
-    return rw_JS_NewBool(ctx, cint(v))
-  rw_JS_NewInt32(ctx, v)
+    return ctx.newBool(bool(cint(v)))
+  ctx.newInt(v)
 
-proc jsGlGetShaderInfoLog(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let shader = GLuint(jsGetGLId(ctx, arg(argv, 0)))
+proc jsGlGetShaderInfoLog(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let shader = GLuint(jsGetGLId(ctx, args[0]))
   var logLen: GLint
   glGetShaderiv(shader, 0x8B84'u32, addr logLen)  # INFO_LOG_LENGTH
-  if logLen <= 0: return rw_JS_NewString(ctx, "")
+  if logLen <= 0: return ctx.newString("")
   var buf = newString(logLen)
   var actual: GLsizei
   glGetShaderInfoLog(shader, GLsizei(logLen), addr actual, cstring(buf))
   buf.setLen(actual)
-  rw_JS_NewString(ctx, cstring(buf))
+  ctx.newString(cstring(buf))
 
-proc jsGlCreateProgram(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlCreateProgram(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   jsNewGLHandle(ctx, glCreateProgram())
 
-proc jsGlDeleteProgram(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDeleteProgram(GLuint(jsGetGLId(ctx, arg(argv, 0))))
-  rw_JS_Undefined()
+proc jsGlDeleteProgram(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let id = GLuint(jsGetGLId(ctx, args[0]))
+  glDeleteProgram(id)
+  if id == glCacheProgram: glCacheProgram = 0
+  ctx.newUndefined()
 
-proc jsGlAttachShader(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glAttachShader(GLuint(jsGetGLId(ctx, arg(argv, 0))),
-                 GLuint(jsGetGLId(ctx, arg(argv, 1))))
-  rw_JS_Undefined()
+proc jsGlAttachShader(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glAttachShader(GLuint(jsGetGLId(ctx, args[0])),
+                 GLuint(jsGetGLId(ctx, args[1])))
+  ctx.newUndefined()
 
-proc jsGlDetachShader(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDetachShader(GLuint(jsGetGLId(ctx, arg(argv, 0))),
-                 GLuint(jsGetGLId(ctx, arg(argv, 1))))
-  rw_JS_Undefined()
+proc jsGlDetachShader(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDetachShader(GLuint(jsGetGLId(ctx, args[0])),
+                 GLuint(jsGetGLId(ctx, args[1])))
+  ctx.newUndefined()
 
-proc jsGlLinkProgram(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glLinkProgram(GLuint(jsGetGLId(ctx, arg(argv, 0))))
-  rw_JS_Undefined()
+proc jsGlLinkProgram(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let id = GLuint(jsGetGLId(ctx, args[0]))
+  glLinkProgram(id)
+  # Diagnostic: log link errors so program failures are visible
+  var status: GLint
+  glGetProgramiv(id, 0x8B82'u32, addr status)  # GL_LINK_STATUS
+  if status == 0:
+    var logLen: GLint
+    glGetProgramiv(id, 0x8B84'u32, addr logLen)  # GL_INFO_LOG_LENGTH
+    if logLen > 0:
+      var buf = newString(logLen)
+      glGetProgramInfoLog(id, GLsizei(logLen), nil, cstring(buf))
+      stderr.writeLine("[GL] program link FAILED (id=" & $id & "): " & buf)
+    else:
+      stderr.writeLine("[GL] program link FAILED (id=" & $id & ") (no info log)")
+  ctx.newUndefined()
 
-proc jsGlGetProgramParameter(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  let pname = GLenum(argU32(ctx, argv, 1))
+proc jsGlGetProgramiv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  let pname = GLenum(ctx.toUint32(args[1]))
   var v: GLint
   glGetProgramiv(prog, pname, addr v)
   if pname == 0x8B82'u32 or pname == 0x8B83'u32 or pname == 0x8B80'u32:
     # LINK_STATUS, VALIDATE_STATUS, DELETE_STATUS
-    return rw_JS_NewBool(ctx, cint(v))
-  rw_JS_NewInt32(ctx, v)
+    return ctx.newBool(bool(cint(v)))
+  ctx.newInt(v)
 
-proc jsGlGetProgramInfoLog(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
+proc jsGlGetProgramInfoLog(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
   var logLen: GLint
   glGetProgramiv(prog, 0x8B84'u32, addr logLen)  # INFO_LOG_LENGTH
-  if logLen <= 0: return rw_JS_NewString(ctx, "")
+  if logLen <= 0: return ctx.newString("")
   var buf = newString(logLen)
   var actual: GLsizei
   glGetProgramInfoLog(prog, GLsizei(logLen), addr actual, cstring(buf))
   buf.setLen(actual)
-  rw_JS_NewString(ctx, cstring(buf))
+  ctx.newString(cstring(buf))
 
-proc jsGlUseProgram(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUseProgram(GLuint(jsGetGLId(ctx, arg(argv, 0))))
-  rw_JS_Undefined()
+proc jsGlUseProgram(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  if prog == glCacheProgram: return ctx.newUndefined()
+  glUseProgram(prog)
+  glCacheProgram = prog
+  ctx.newUndefined()
 
-proc jsGlValidateProgram(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glValidateProgram(GLuint(jsGetGLId(ctx, arg(argv, 0))))
-  rw_JS_Undefined()
+proc jsGlValidateProgram(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glValidateProgram(GLuint(jsGetGLId(ctx, args[0])))
+  ctx.newUndefined()
 
 # ── Attributes / Uniforms Location ───────────────────────────────────────
 
-proc jsGlGetAttribLocation(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  let name = argStr(ctx, argv, 1)
-  rw_JS_NewInt32(ctx, glGetAttribLocation(prog, cstring(name)))
+proc jsGlGetAttribLocation(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  let name = ctx.toNimString(args[1])
+  ctx.newInt(glGetAttribLocation(prog, cstring(name)))
 
-proc jsGlGetUniformLocation(ctx: ptr JSContext; thisVal: JSValue;
-                            argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  let name = argStr(ctx, argv, 1)
+proc jsGlGetUniformLocation(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  let name = ctx.toNimString(args[1])
   jsNewGLLocHandle(ctx, glGetUniformLocation(prog, cstring(name)))
 
-proc jsGlBindAttribLocation(ctx: ptr JSContext; thisVal: JSValue;
-                            argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  glBindAttribLocation(prog, GLuint(argU32(ctx, argv, 1)), cstring(argStr(ctx, argv, 2)))
-  rw_JS_Undefined()
+proc jsGlBindAttribLocation(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  glBindAttribLocation(prog, GLuint(ctx.toUint32(args[1])), cstring(ctx.toNimString(args[2])))
+  ctx.newUndefined()
 
-proc jsGlEnableVertexAttribArray(ctx: ptr JSContext; thisVal: JSValue;
-                                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glEnableVertexAttribArray(GLuint(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlEnableVertexAttribArray(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glEnableVertexAttribArray(GLuint(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlDisableVertexAttribArray(ctx: ptr JSContext; thisVal: JSValue;
-                                  argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDisableVertexAttribArray(GLuint(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlDisableVertexAttribArray(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDisableVertexAttribArray(GLuint(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
-proc jsGlVertexAttribPointer(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlVertexAttribPointer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   glVertexAttribPointer(
-    GLuint(argU32(ctx, argv, 0)),
-    GLint(argI32(ctx, argv, 1)),
-    GLenum(argU32(ctx, argv, 2)),
-    GLboolean(if argBool(ctx, argv, 3): 1 else: 0),
-    GLsizei(argI32(ctx, argv, 4)),
-    cast[pointer](argI32(ctx, argv, 5))  # byte offset → pointer
+    GLuint(ctx.toUint32(args[0])),
+    GLint(ctx.toInt32(args[1])),
+    GLenum(ctx.toUint32(args[2])),
+    GLboolean(if ctx.toBool(args[3]): 1 else: 0),
+    GLsizei(ctx.toInt32(args[4])),
+    cast[pointer](ctx.toInt32(args[5]))  # byte offset → pointer
   )
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlGetActiveAttrib(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  let index = GLuint(argU32(ctx, argv, 1))
+proc jsGlGetActiveAttrib(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  let index = GLuint(ctx.toUint32(args[1]))
   var nameBuf: array[256, char]
   var length: GLsizei
   var size: GLint
   var typ: GLenum
   glGetActiveAttrib(prog, index, 256, addr length, addr size, addr typ, cast[cstring](addr nameBuf[0]))
-  let obj = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, obj, "size", rw_JS_NewInt32(ctx, size))
-  discard JS_SetPropertyStr(ctx, obj, "type", rw_JS_NewInt32(ctx, int32(typ)))
-  discard JS_SetPropertyStr(ctx, obj, "name", JS_NewStringLen(ctx, cast[cstring](addr nameBuf[0]), csize_t(length)))
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "size", ctx.newInt(size))
+  ctx.setPropSteal(obj, "type", ctx.newInt(int32(typ)))
+  ctx.setPropSteal(obj, "name", ctx.newStringLen(cast[cstring](addr nameBuf[0]), int(csize_t(length))))
   obj
 
-proc jsGlGetActiveUniform(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let prog = GLuint(jsGetGLId(ctx, arg(argv, 0)))
-  let index = GLuint(argU32(ctx, argv, 1))
+proc jsGlGetActiveUniform(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let prog = GLuint(jsGetGLId(ctx, args[0]))
+  let index = GLuint(ctx.toUint32(args[1]))
   var nameBuf: array[256, char]
   var length: GLsizei
   var size: GLint
   var typ: GLenum
   glGetActiveUniform(prog, index, 256, addr length, addr size, addr typ, cast[cstring](addr nameBuf[0]))
-  let obj = JS_NewObject(ctx)
-  discard JS_SetPropertyStr(ctx, obj, "size", rw_JS_NewInt32(ctx, size))
-  discard JS_SetPropertyStr(ctx, obj, "type", rw_JS_NewInt32(ctx, int32(typ)))
-  discard JS_SetPropertyStr(ctx, obj, "name", JS_NewStringLen(ctx, cast[cstring](addr nameBuf[0]), csize_t(length)))
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "size", ctx.newInt(size))
+  ctx.setPropSteal(obj, "type", ctx.newInt(int32(typ)))
+  ctx.setPropSteal(obj, "name", ctx.newStringLen(cast[cstring](addr nameBuf[0]), int(csize_t(length))))
   obj
 
 # ── Buffers ──────────────────────────────────────────────────────────────
 
-proc jsGlCreateBuffer(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlCreateBuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   var id: GLuint
   glGenBuffers(1, addr id)
   jsNewGLHandle(ctx, id)
 
-proc jsGlDeleteBuffer(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  var id = GLuint(jsGetGLId(ctx, arg(argv, 0)))
+proc jsGlDeleteBuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  var id = GLuint(jsGetGLId(ctx, args[0]))
   glDeleteBuffers(1, addr id)
-  rw_JS_Undefined()
+  if id == glCacheArrayBuf: glCacheArrayBuf = 0
+  if id == glCacheElementBuf: glCacheElementBuf = 0
+  ctx.newUndefined()
 
-proc jsGlBindBuffer(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBindBuffer(GLenum(argU32(ctx, argv, 0)), GLuint(jsGetGLId(ctx, arg(argv, 1))))
-  rw_JS_Undefined()
+proc jsGlBindBuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let target = GLenum(ctx.toUint32(args[0]))
+  let buf = GLuint(jsGetGLId(ctx, args[1]))
+  if target == 0x8892.GLenum:       # GL_ARRAY_BUFFER
+    if buf == glCacheArrayBuf: return ctx.newUndefined()
+    glCacheArrayBuf = buf
+  elif target == 0x8893.GLenum:     # GL_ELEMENT_ARRAY_BUFFER
+    if buf == glCacheElementBuf: return ctx.newUndefined()
+    glCacheElementBuf = buf
+  glBindBuffer(target, buf)
+  ctx.newUndefined()
 
-proc jsGlBufferData(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let target = GLenum(argU32(ctx, argv, 0))
-  let usage  = GLenum(argU32(ctx, argv, 2))
-  let tag = rw_JS_VALUE_GET_TAG(arg(argv, 1))
-  if tag == JS_TAG_INT_C or tag == JS_TAG_FLOAT64_C:
+proc jsGlBufferData(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let target = GLenum(ctx.toUint32(args[0]))
+  let usage  = GLenum(ctx.toUint32(args[2]))
+  if ctx.isNumber(args[1]):
     # bufferData(target, size, usage) — allocate empty
-    let size = argI32(ctx, argv, 1)
+    let size = ctx.toInt32(args[1])
     glBufferData(target, int(size), nil, usage)
   else:
     # bufferData(target, typedArray, usage) — allocate with data
-    let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
+    var size: int
+    let data = ctx.getArrayBufferData(args[1], size)
     glBufferData(target, int(size), data, usage)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlBufferSubData(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let target = GLenum(argU32(ctx, argv, 0))
-  let offset = argI32(ctx, argv, 1)
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 2))
+proc jsGlBufferSubData(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let target = GLenum(ctx.toUint32(args[0]))
+  let offset = ctx.toInt32(args[1])
+  var size: int
+  let data = ctx.getArrayBufferData(args[2], size)
   if data != nil:
     glBufferSubData(target, int(offset), int(size), data)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
 # ── Textures ─────────────────────────────────────────────────────────────
 
-proc jsGlCreateTexture(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlCreateTexture(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   var id: GLuint
   glGenTextures(1, addr id)
   jsNewGLHandle(ctx, id)
 
-proc jsGlDeleteTexture(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  var id = GLuint(jsGetGLId(ctx, arg(argv, 0)))
+proc jsGlDeleteTexture(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  var id = GLuint(jsGetGLId(ctx, args[0]))
   glDeleteTextures(1, addr id)
-  rw_JS_Undefined()
+  for i in 0..<glCacheBoundTex2D.len:
+    if glCacheBoundTex2D[i] == id: glCacheBoundTex2D[i] = 0
+  ctx.newUndefined()
 
-proc jsGlBindTexture(ctx: ptr JSContext; thisVal: JSValue;
-                     argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBindTexture(GLenum(argU32(ctx, argv, 0)), GLuint(jsGetGLId(ctx, arg(argv, 1))))
-  rw_JS_Undefined()
+proc jsGlBindTexture(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let target = GLenum(ctx.toUint32(args[0]))
+  let tex = GLuint(jsGetGLId(ctx, args[1]))
+  if target == 0x0DE1.GLenum:       # GL_TEXTURE_2D
+    let unit = int(uint32(glCacheActiveTexUnit) - 0x84C0'u32)
+    if unit >= 0 and unit < 16:
+      if glCacheBoundTex2D[unit] == tex: return ctx.newUndefined()
+      glCacheBoundTex2D[unit] = tex
+  glBindTexture(target, tex)
+  ctx.newUndefined()
 
-proc jsGlActiveTexture(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glActiveTexture(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlActiveTexture(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let unit = GLenum(ctx.toUint32(args[0]))
+  if unit == glCacheActiveTexUnit: return ctx.newUndefined()
+  glActiveTexture(unit)
+  glCacheActiveTexUnit = unit
+  ctx.newUndefined()
 
-proc jsGlTexImage2D(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc >= 9:
+proc jsGlTexImage2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  if args.len >= 9:
     # texImage2D(target, level, internalformat, width, height, border, format, type, data)
-    let target = GLenum(argU32(ctx, argv, 0))
-    let level  = GLint(argI32(ctx, argv, 1))
-    let ifmt   = GLint(argI32(ctx, argv, 2))
-    let width  = GLsizei(argI32(ctx, argv, 3))
-    let height = GLsizei(argI32(ctx, argv, 4))
-    let border = GLint(argI32(ctx, argv, 5))
-    let fmt    = GLenum(argU32(ctx, argv, 6))
-    let typ    = GLenum(argU32(ctx, argv, 7))
-    let tag = rw_JS_VALUE_GET_TAG(arg(argv, 8))
-    if tag == JS_TAG_NULL_C or tag == JS_TAG_UNDEFINED_C:
+    let target = GLenum(ctx.toUint32(args[0]))
+    let level  = GLint(ctx.toInt32(args[1]))
+    let ifmt   = GLint(ctx.toInt32(args[2]))
+    let width  = GLsizei(ctx.toInt32(args[3]))
+    let height = GLsizei(ctx.toInt32(args[4]))
+    let border = GLint(ctx.toInt32(args[5]))
+    let fmt    = GLenum(ctx.toUint32(args[6]))
+    let typ    = GLenum(ctx.toUint32(args[7]))
+    if (ctx.isNull(args[8]) or ctx.isUndefined(args[8])):
       glTexImage2D(target, level, ifmt, width, height, border, fmt, typ, nil)
     else:
-      let (data, size) = jsGetBufferData(ctx, arg(argv, 8))
-      glTexImage2D(target, level, ifmt, width, height, border, fmt, typ, data)
-  elif argc >= 6:
+      var dataLen: int
+      let data = ctx.getArrayBufferData(args[8], dataLen)
+      glUploadTexImage(target, level, ifmt, width, height, border, fmt, typ, data)
+  elif args.len >= 6:
     # texImage2D(target, level, internalformat, format, type, source)
-    # source is HTMLImageElement — extract pixel data (stub: 1x1 white pixel)
-    let target = GLenum(argU32(ctx, argv, 0))
-    let level  = GLint(argI32(ctx, argv, 1))
-    let ifmt   = GLint(argI32(ctx, argv, 2))
-    let fmt    = GLenum(argU32(ctx, argv, 3))
-    let typ    = GLenum(argU32(ctx, argv, 4))
-    # Try to get __pixelData from the image object (set by Phase 6 image loader)
-    let source = arg(argv, 5)
+    # source is HTMLImageElement, HTMLCanvasElement, or null
+    let target = GLenum(ctx.toUint32(args[0]))
+    let level  = GLint(ctx.toInt32(args[1]))
+    let ifmt   = GLint(ctx.toInt32(args[2]))
+    let fmt    = GLenum(ctx.toUint32(args[3]))
+    let typ    = GLenum(ctx.toUint32(args[4]))
+    let source = args[5]
+    # Handle null/undefined source (e.g. PIXI's empty placeholder texture).
+    # In real WebGL this generates INVALID_VALUE; we allocate a 1x1 empty tex.
+    if (ctx.isNull(source) or ctx.isUndefined(source)):
+      glTexImage2D(target, level, ifmt, 1, 1, 0, fmt, typ, nil)
+      return ctx.newUndefined()
     # Check if source is a canvas element with a 2D context (__ctxId)
-    let ctxIdProp = JS_GetPropertyStr(ctx, source, "__ctxId")
-    let ctxIdTag = rw_JS_VALUE_GET_TAG(ctxIdProp)
-    if ctxIdTag == JS_TAG_INT_C:
+    let ctxIdProp = ctx.getProp(source, "__ctxId")
+    if ctx.isNumber(ctxIdProp):
       var srcId: int32
-      discard JS_ToInt32(ctx, addr srcId, ctxIdProp)
-      rw_JS_FreeValue(ctx, ctxIdProp)
+      srcId = ctx.toInt32(ctxIdProp)
+      ctx.freeValue(ctxIdProp)
       if srcId >= 0 and srcId < int32(canvas2dStates.len):
         let sc = addr canvas2dStates[srcId]
         if sc.pixels.len > 0:
-          glTexImage2D(target, level, ifmt, GLsizei(sc.width), GLsizei(sc.height),
-                       0, fmt, typ, addr sc.pixels[0])
+          glUploadTexImage(target, level, ifmt, GLsizei(sc.width), GLsizei(sc.height),
+                           0, fmt, typ, addr sc.pixels[0])
         else:
           var px: array[4, uint8] = [255'u8, 255, 255, 255]
           glTexImage2D(target, level, ifmt, 1, 1, 0, fmt, typ, addr px[0])
     else:
-      rw_JS_FreeValue(ctx, ctxIdProp)
-      let pxProp = JS_GetPropertyStr(ctx, source, "__pixelData")
-      let pxTag = rw_JS_VALUE_GET_TAG(pxProp)
-      if pxTag != JS_TAG_NULL_C and pxTag != JS_TAG_UNDEFINED_C:
+      ctx.freeValue(ctxIdProp)
+      let pxProp = ctx.getProp(source, "__pixelData")
+      if not ctx.isNull(pxProp) and not ctx.isUndefined(pxProp):
         # Image has pixel data — extract width/height and buffer
-        let wProp = JS_GetPropertyStr(ctx, source, "naturalWidth")
-        let hProp = JS_GetPropertyStr(ctx, source, "naturalHeight")
+        let wProp = ctx.getProp(source, "naturalWidth")
+        let hProp = ctx.getProp(source, "naturalHeight")
         var iw, ih: int32
-        discard JS_ToInt32(ctx, addr iw, wProp)
-        discard JS_ToInt32(ctx, addr ih, hProp)
-        let (data, sz) = jsGetBufferData(ctx, pxProp)
-        glTexImage2D(target, level, ifmt, GLsizei(iw), GLsizei(ih), 0, fmt, typ, data)
-        rw_JS_FreeValue(ctx, wProp)
-        rw_JS_FreeValue(ctx, hProp)
+        iw = ctx.toInt32(wProp)
+        ih = ctx.toInt32(hProp)
+        var dataLen: int
+        let data = ctx.getArrayBufferData(pxProp, dataLen)
+        # Our decoded pixel data is ALWAYS RGBA32 (4 bytes/pixel).
+        # If the JS requested GL_RGB (0x1907), uploading as GL_RGB would cause
+        # row-stride misalignment and color corruption because applyUnpackTransform
+        # and processImageQueue both output 4-byte RGBA rows, not 3-byte RGB rows.
+        # Fix: override the format to GL_RGBA for all image-source uploads.
+        let uploadIfmt = if ifmt == GLint(0x1907): GLint(0x1908) else: ifmt  # GL_RGB→GL_RGBA
+        let uploadFmt  = if fmt  == GLenum(0x1907): GLenum(0x1908) else: fmt
+        if ifmt != uploadIfmt:
+          stderr.writeLine("[GL:texImage2D] img " & $iw & "x" & $ih & " ifmt=" & $ifmt & "→" & $uploadIfmt & " (RGB→RGBA forced) premul=" & $glUnpackPremultiplyAlpha)
+        else:
+          stderr.writeLine("[GL:texImage2D] img " & $iw & "x" & $ih & " ifmt=" & $uploadIfmt & " premul=" & $glUnpackPremultiplyAlpha)
+        glUploadTexImage(target, level, uploadIfmt, GLsizei(iw), GLsizei(ih), 0, uploadFmt, typ, data)
+        ctx.freeValue(wProp)
+        ctx.freeValue(hProp)
       else:
-        # Fallback: 1x1 white pixel
+        # Fallback: 1x1 white pixel — this means __pixelData was missing!
+        stderr.writeLine("[GL:texImage2D] WARNING: no __pixelData on Image source")
         var px: array[4, uint8] = [255'u8, 255, 255, 255]
         glTexImage2D(target, level, ifmt, 1, 1, 0, fmt, typ, addr px[0])
-      rw_JS_FreeValue(ctx, pxProp)
-  rw_JS_Undefined()
+      ctx.freeValue(pxProp)
+  ctx.newUndefined()
 
-proc jsGlTexSubImage2D(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc >= 9:
-    let (data, size) = jsGetBufferData(ctx, arg(argv, 8))
-    glTexSubImage2D(GLenum(argU32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-                    GLint(argI32(ctx, argv, 2)), GLint(argI32(ctx, argv, 3)),
-                    GLsizei(argI32(ctx, argv, 4)), GLsizei(argI32(ctx, argv, 5)),
-                    GLenum(argU32(ctx, argv, 6)), GLenum(argU32(ctx, argv, 7)), data)
-  rw_JS_Undefined()
+proc jsGlTexSubImage2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  if args.len >= 9:
+    # texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, data)
+    var dataLen: int
+    let data = ctx.getArrayBufferData(args[8], dataLen)
+    glUploadTexSub(GLenum(ctx.toUint32(args[0])), GLint(ctx.toInt32(args[1])),
+                   GLint(ctx.toInt32(args[2])), GLint(ctx.toInt32(args[3])),
+                   GLsizei(ctx.toInt32(args[4])), GLsizei(ctx.toInt32(args[5])),
+                   GLenum(ctx.toUint32(args[6])), GLenum(ctx.toUint32(args[7])), data)
+  elif args.len >= 7:
+    # texSubImage2D(target, level, xoffset, yoffset, format, type, source)
+    let target  = GLenum(ctx.toUint32(args[0]))
+    let level   = GLint(ctx.toInt32(args[1]))
+    let xoff    = GLint(ctx.toInt32(args[2]))
+    let yoff    = GLint(ctx.toInt32(args[3]))
+    let fmt     = GLenum(ctx.toUint32(args[4]))
+    let typ     = GLenum(ctx.toUint32(args[5]))
+    let source  = args[6]
+    if not ctx.isNull(source) and not ctx.isUndefined(source):
+      # Try canvas (__ctxId) first, then image (__pixelData)
+      let ctxIdProp = ctx.getProp(source, "__ctxId")
+      if ctx.isNumber(ctxIdProp):
+        var srcId: int32
+        srcId = ctx.toInt32(ctxIdProp)
+        ctx.freeValue(ctxIdProp)
+        if srcId >= 0 and srcId < int32(canvas2dStates.len):
+          let sc = addr canvas2dStates[srcId]
+          if sc.pixels.len > 0:
+            glUploadTexSub(target, level, xoff, yoff,
+                           GLsizei(sc.width), GLsizei(sc.height),
+                           fmt, typ, addr sc.pixels[0])
+      else:
+        ctx.freeValue(ctxIdProp)
+        let pxProp = ctx.getProp(source, "__pixelData")
+        if not ctx.isNull(pxProp) and not ctx.isUndefined(pxProp):
+          let wProp = ctx.getProp(source, "naturalWidth")
+          let hProp = ctx.getProp(source, "naturalHeight")
+          var iw, ih: int32
+          iw = ctx.toInt32(wProp)
+          ih = ctx.toInt32(hProp)
+          var dataLen: int
+          let data = ctx.getArrayBufferData(pxProp, dataLen)
+          if data != nil:
+            glUploadTexSub(target, level, xoff, yoff,
+                           GLsizei(iw), GLsizei(ih), fmt, typ, data)
+          ctx.freeValue(wProp)
+          ctx.freeValue(hProp)
+        ctx.freeValue(pxProp)
+  ctx.newUndefined()
 
-proc jsGlTexParameteri(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glTexParameteri(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                  GLint(argI32(ctx, argv, 2)))
-  rw_JS_Undefined()
+# ── Copy tex functions ───────────────────────────────────────────────────
 
-proc jsGlTexParameterf(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glTexParameterf(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                  argF32(ctx, argv, 2))
-  rw_JS_Undefined()
+proc jsGlCopyTexImage2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glCopyTexImage2D(GLenum(ctx.toUint32(args[0])), GLint(ctx.toInt32(args[1])),
+                   GLenum(ctx.toUint32(args[2])),
+                   GLint(ctx.toInt32(args[3])), GLint(ctx.toInt32(args[4])),
+                   GLsizei(ctx.toInt32(args[5])), GLsizei(ctx.toInt32(args[6])),
+                   GLint(ctx.toInt32(args[7])))
+  ctx.newUndefined()
 
-proc jsGlGenerateMipmap(ctx: ptr JSContext; thisVal: JSValue;
-                        argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glGenerateMipmap(GLenum(argU32(ctx, argv, 0)))
-  rw_JS_Undefined()
+proc jsGlCopyTexSubImage2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glCopyTexSubImage2D(GLenum(ctx.toUint32(args[0])), GLint(ctx.toInt32(args[1])),
+                      GLint(ctx.toInt32(args[2])), GLint(ctx.toInt32(args[3])),
+                      GLint(ctx.toInt32(args[4])), GLint(ctx.toInt32(args[5])),
+                      GLsizei(ctx.toInt32(args[6])), GLsizei(ctx.toInt32(args[7])))
+  ctx.newUndefined()
+
+proc jsGlTexParameteri(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glTexParameteri(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                  GLint(ctx.toInt32(args[2])))
+  ctx.newUndefined()
+
+proc jsGlTexParameterf(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glTexParameterf(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                  float32(ctx.toFloat64(args[2])))
+  ctx.newUndefined()
+
+proc jsGlGenerateMipmap(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glGenerateMipmap(GLenum(ctx.toUint32(args[0])))
+  ctx.newUndefined()
 
 # ── Framebuffers / Renderbuffers ─────────────────────────────────────────
 
-proc jsGlCreateFramebuffer(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlCreateFramebuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   var id: GLuint
   glGenFramebuffers(1, addr id)
   jsNewGLHandle(ctx, id)
 
-proc jsGlDeleteFramebuffer(ctx: ptr JSContext; thisVal: JSValue;
-                           argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  var id = GLuint(jsGetGLId(ctx, arg(argv, 0)))
+proc jsGlDeleteFramebuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  var id = GLuint(jsGetGLId(ctx, args[0]))
   glDeleteFramebuffers(1, addr id)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlBindFramebuffer(ctx: ptr JSContext; thisVal: JSValue;
-                         argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBindFramebuffer(GLenum(argU32(ctx, argv, 0)), GLuint(jsGetGLId(ctx, arg(argv, 1))))
-  rw_JS_Undefined()
+proc jsGlBindFramebuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let target = GLenum(ctx.toUint32(args[0]))
+  let id = GLuint(jsGetGLId(ctx, args[1]))
+  glJSBoundFBO = id
+  if id == 0 and glDrawingFBO != 0:
+    # Redirect "default framebuffer" to our drawing buffer FBO
+    glBindFramebuffer(target, glDrawingFBO)
+  else:
+    glBindFramebuffer(target, id)
+  ctx.newUndefined()
 
-proc jsGlFramebufferTexture2D(ctx: ptr JSContext; thisVal: JSValue;
-                              argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glFramebufferTexture2D(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                         GLenum(argU32(ctx, argv, 2)),
-                         GLuint(jsGetGLId(ctx, arg(argv, 3))),
-                         GLint(argI32(ctx, argv, 4)))
-  rw_JS_Undefined()
+proc jsGlFramebufferTexture2D(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glFramebufferTexture2D(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                         GLenum(ctx.toUint32(args[2])),
+                         GLuint(jsGetGLId(ctx, args[3])),
+                         GLint(ctx.toInt32(args[4])))
+  ctx.newUndefined()
 
-proc jsGlFramebufferRenderbuffer(ctx: ptr JSContext; thisVal: JSValue;
-                                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glFramebufferRenderbuffer(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                            GLenum(argU32(ctx, argv, 2)),
-                            GLuint(jsGetGLId(ctx, arg(argv, 3))))
-  rw_JS_Undefined()
+proc jsGlFramebufferRenderbuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glFramebufferRenderbuffer(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                            GLenum(ctx.toUint32(args[2])),
+                            GLuint(jsGetGLId(ctx, args[3])))
+  ctx.newUndefined()
 
-proc jsGlCheckFramebufferStatus(ctx: ptr JSContext; thisVal: JSValue;
-                                argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_NewInt32(ctx, int32(glCheckFramebufferStatus(GLenum(argU32(ctx, argv, 0)))))
+proc jsGlCheckFramebufferStatus(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ctx.newInt(int32(glCheckFramebufferStatus(GLenum(ctx.toUint32(args[0])))))
 
-proc jsGlCreateRenderbuffer(ctx: ptr JSContext; thisVal: JSValue;
-                            argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
+proc jsGlCreateRenderbuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
   var id: GLuint
   glGenRenderbuffers(1, addr id)
   jsNewGLHandle(ctx, id)
 
-proc jsGlDeleteRenderbuffer(ctx: ptr JSContext; thisVal: JSValue;
-                            argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  var id = GLuint(jsGetGLId(ctx, arg(argv, 0)))
+proc jsGlDeleteRenderbuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  var id = GLuint(jsGetGLId(ctx, args[0]))
   glDeleteRenderbuffers(1, addr id)
-  rw_JS_Undefined()
+  ctx.newUndefined()
 
-proc jsGlBindRenderbuffer(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glBindRenderbuffer(GLenum(argU32(ctx, argv, 0)), GLuint(jsGetGLId(ctx, arg(argv, 1))))
-  rw_JS_Undefined()
+proc jsGlBindRenderbuffer(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glBindRenderbuffer(GLenum(ctx.toUint32(args[0])), GLuint(jsGetGLId(ctx, args[1])))
+  ctx.newUndefined()
 
-proc jsGlRenderbufferStorage(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glRenderbufferStorage(GLenum(argU32(ctx, argv, 0)), GLenum(argU32(ctx, argv, 1)),
-                        GLsizei(argI32(ctx, argv, 2)), GLsizei(argI32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlRenderbufferStorage(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glRenderbufferStorage(GLenum(ctx.toUint32(args[0])), GLenum(ctx.toUint32(args[1])),
+                        GLsizei(ctx.toInt32(args[2])), GLsizei(ctx.toInt32(args[3])))
+  ctx.newUndefined()
 
 # ── Drawing ──────────────────────────────────────────────────────────────
 
-proc jsGlDrawArrays(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDrawArrays(GLenum(argU32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-               GLsizei(argI32(ctx, argv, 2)))
-  rw_JS_Undefined()
+proc jsGlDrawArrays(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDrawArrays(GLenum(ctx.toUint32(args[0])), GLint(ctx.toInt32(args[1])),
+               GLsizei(ctx.toInt32(args[2])))
+  ctx.newUndefined()
 
-proc jsGlDrawElements(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glDrawElements(GLenum(argU32(ctx, argv, 0)), GLsizei(argI32(ctx, argv, 1)),
-                 GLenum(argU32(ctx, argv, 2)),
-                 cast[pointer](argI32(ctx, argv, 3)))  # byte offset → pointer
-  rw_JS_Undefined()
+proc jsGlDrawElements(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glDrawElements(GLenum(ctx.toUint32(args[0])), GLsizei(ctx.toInt32(args[1])),
+                 GLenum(ctx.toUint32(args[2])),
+                 cast[pointer](ctx.toInt32(args[3])))  # byte offset → pointer
+  ctx.newUndefined()
 
 # ── Uniforms ─────────────────────────────────────────────────────────────
 
-proc jsGlUniform1f(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform1f(jsGetGLLocId(ctx, arg(argv, 0)), argF32(ctx, argv, 1))
-  rw_JS_Undefined()
+proc jsGlUniform1f(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform1f(jsGetGLLocId(ctx, args[0]), float32(ctx.toFloat64(args[1])))
+  ctx.newUndefined()
 
-proc jsGlUniform2f(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform2f(jsGetGLLocId(ctx, arg(argv, 0)), argF32(ctx, argv, 1), argF32(ctx, argv, 2))
-  rw_JS_Undefined()
+proc jsGlUniform2f(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform2f(jsGetGLLocId(ctx, args[0]), float32(ctx.toFloat64(args[1])), float32(ctx.toFloat64(args[2])))
+  ctx.newUndefined()
 
-proc jsGlUniform3f(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform3f(jsGetGLLocId(ctx, arg(argv, 0)), argF32(ctx, argv, 1),
-              argF32(ctx, argv, 2), argF32(ctx, argv, 3))
-  rw_JS_Undefined()
+proc jsGlUniform3f(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform3f(jsGetGLLocId(ctx, args[0]), float32(ctx.toFloat64(args[1])),
+              float32(ctx.toFloat64(args[2])), float32(ctx.toFloat64(args[3])))
+  ctx.newUndefined()
 
-proc jsGlUniform4f(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform4f(jsGetGLLocId(ctx, arg(argv, 0)), argF32(ctx, argv, 1),
-              argF32(ctx, argv, 2), argF32(ctx, argv, 3), argF32(ctx, argv, 4))
-  rw_JS_Undefined()
+proc jsGlUniform4f(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform4f(jsGetGLLocId(ctx, args[0]), float32(ctx.toFloat64(args[1])),
+              float32(ctx.toFloat64(args[2])), float32(ctx.toFloat64(args[3])), float32(ctx.toFloat64(args[4])))
+  ctx.newUndefined()
 
-proc jsGlUniform1i(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform1i(jsGetGLLocId(ctx, arg(argv, 0)), GLint(argI32(ctx, argv, 1)))
-  rw_JS_Undefined()
+proc jsGlUniform1i(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform1i(jsGetGLLocId(ctx, args[0]), GLint(ctx.toInt32(args[1])))
+  ctx.newUndefined()
 
-proc jsGlUniform2i(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform2i(jsGetGLLocId(ctx, arg(argv, 0)), GLint(argI32(ctx, argv, 1)),
-              GLint(argI32(ctx, argv, 2)))
-  rw_JS_Undefined()
+proc jsGlUniform2i(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform2i(jsGetGLLocId(ctx, args[0]), GLint(ctx.toInt32(args[1])),
+              GLint(ctx.toInt32(args[2])))
+  ctx.newUndefined()
 
-proc jsGlUniform3i(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform3i(jsGetGLLocId(ctx, arg(argv, 0)), GLint(argI32(ctx, argv, 1)),
-              GLint(argI32(ctx, argv, 2)), GLint(argI32(ctx, argv, 3)))
-  rw_JS_Undefined()
+proc jsGlUniform3i(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform3i(jsGetGLLocId(ctx, args[0]), GLint(ctx.toInt32(args[1])),
+              GLint(ctx.toInt32(args[2])), GLint(ctx.toInt32(args[3])))
+  ctx.newUndefined()
 
-proc jsGlUniform4i(ctx: ptr JSContext; thisVal: JSValue;
-                   argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  glUniform4i(jsGetGLLocId(ctx, arg(argv, 0)), GLint(argI32(ctx, argv, 1)),
-              GLint(argI32(ctx, argv, 2)), GLint(argI32(ctx, argv, 3)),
-              GLint(argI32(ctx, argv, 4)))
-  rw_JS_Undefined()
+proc jsGlUniform4i(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  glUniform4i(jsGetGLLocId(ctx, args[0]), GLint(ctx.toInt32(args[1])),
+              GLint(ctx.toInt32(args[2])), GLint(ctx.toInt32(args[3])),
+              GLint(ctx.toInt32(args[4])))
+  ctx.newUndefined()
 
-# Uniform*v and UniformMatrix*fv — take TypedArray data
+# Uniform*v and UniformMatrix*fv — handle both TypedArray and plain JS Array
 
-proc jsGlUniform1fv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform1fv(loc, GLsizei(int(size) div sizeof(GLfloat)), cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniform1fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[1], buf):
+    glUniform1fv(loc, GLsizei(buf.len), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform2fv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform2fv(loc, GLsizei(int(size) div (2 * sizeof(GLfloat))), cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniform2fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[1], buf):
+    glUniform2fv(loc, GLsizei(buf.len div 2), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform3fv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform3fv(loc, GLsizei(int(size) div (3 * sizeof(GLfloat))), cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniform3fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[1], buf):
+    glUniform3fv(loc, GLsizei(buf.len div 3), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform4fv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform4fv(loc, GLsizei(int(size) div (4 * sizeof(GLfloat))), cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniform4fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[1], buf):
+    glUniform4fv(loc, GLsizei(buf.len div 4), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform1iv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform1iv(loc, GLsizei(int(size) div sizeof(GLint)), cast[ptr GLint](data))
-  rw_JS_Undefined()
+proc jsGlUniform1iv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLint]
+  if jsGetIntArray(ctx, args[1], buf):
+    glUniform1iv(loc, GLsizei(buf.len), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform2iv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform2iv(loc, GLsizei(int(size) div (2 * sizeof(GLint))), cast[ptr GLint](data))
-  rw_JS_Undefined()
+proc jsGlUniform2iv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLint]
+  if jsGetIntArray(ctx, args[1], buf):
+    glUniform2iv(loc, GLsizei(buf.len div 2), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform3iv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform3iv(loc, GLsizei(int(size) div (3 * sizeof(GLint))), cast[ptr GLint](data))
-  rw_JS_Undefined()
+proc jsGlUniform3iv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLint]
+  if jsGetIntArray(ctx, args[1], buf):
+    glUniform3iv(loc, GLsizei(buf.len div 3), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniform4iv(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 1))
-  if data != nil:
-    glUniform4iv(loc, GLsizei(int(size) div (4 * sizeof(GLint))), cast[ptr GLint](data))
-  rw_JS_Undefined()
+proc jsGlUniform4iv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  var buf: seq[GLint]
+  if jsGetIntArray(ctx, args[1], buf):
+    glUniform4iv(loc, GLsizei(buf.len div 4), addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniformMatrix2fv(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let transpose = GLboolean(if argBool(ctx, argv, 1): 1 else: 0)
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 2))
-  if data != nil:
-    glUniformMatrix2fv(loc, GLsizei(int(size) div (4 * sizeof(GLfloat))), transpose, cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniformMatrix2fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  let transpose = GLboolean(if ctx.toBool(args[1]): 1 else: 0)
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[2], buf):
+    glUniformMatrix2fv(loc, GLsizei(buf.len div 4), transpose, addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniformMatrix3fv(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let transpose = GLboolean(if argBool(ctx, argv, 1): 1 else: 0)
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 2))
-  if data != nil:
-    glUniformMatrix3fv(loc, GLsizei(int(size) div (9 * sizeof(GLfloat))), transpose, cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniformMatrix3fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  let transpose = GLboolean(if ctx.toBool(args[1]): 1 else: 0)
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[2], buf):
+    glUniformMatrix3fv(loc, GLsizei(buf.len div 9), transpose, addr buf[0])
+  ctx.newUndefined()
 
-proc jsGlUniformMatrix4fv(ctx: ptr JSContext; thisVal: JSValue;
-                          argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let loc = jsGetGLLocId(ctx, arg(argv, 0))
-  let transpose = GLboolean(if argBool(ctx, argv, 1): 1 else: 0)
-  let (data, size) = jsGetBufferData(ctx, arg(argv, 2))
-  if data != nil:
-    glUniformMatrix4fv(loc, GLsizei(int(size) div (16 * sizeof(GLfloat))), transpose, cast[ptr GLfloat](data))
-  rw_JS_Undefined()
+proc jsGlUniformMatrix4fv(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let loc = jsGetGLLocId(ctx, args[0])
+  let transpose = GLboolean(if ctx.toBool(args[1]): 1 else: 0)
+  var buf: seq[GLfloat]
+  if jsGetFloatArray(ctx, args[2], buf):
+    glUniformMatrix4fv(loc, GLsizei(buf.len div 16), transpose, addr buf[0])
+  ctx.newUndefined()
 
 # ── Reading ──────────────────────────────────────────────────────────────
 
-proc jsGlReadPixels(ctx: ptr JSContext; thisVal: JSValue;
-                    argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if argc >= 7:
-    let (data, size) = jsGetBufferData(ctx, arg(argv, 6))
+proc jsGlReadPixels(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  if args.len >= 7:
+    var dataLen: int
+    let data = ctx.getArrayBufferData(args[6], dataLen)
     if data != nil:
-      glReadPixels(GLint(argI32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-                   GLsizei(argI32(ctx, argv, 2)), GLsizei(argI32(ctx, argv, 3)),
-                   GLenum(argU32(ctx, argv, 4)), GLenum(argU32(ctx, argv, 5)), data)
-  rw_JS_Undefined()
+      glReadPixels(GLint(ctx.toInt32(args[0])), GLint(ctx.toInt32(args[1])),
+                   GLsizei(ctx.toInt32(args[2])), GLsizei(ctx.toInt32(args[3])),
+                   GLenum(ctx.toUint32(args[4])), GLenum(ctx.toUint32(args[5])), data)
+  ctx.newUndefined()
 
 # ── Query / Parameter ────────────────────────────────────────────────────
 
-proc jsGlGetParameter(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let pname = GLenum(argU32(ctx, argv, 0))
+proc jsGlGetParameter(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let pname = GLenum(ctx.toUint32(args[0]))
   case pname
   of 0x1F00'u32:  # VENDOR
     let s = glGetString(pname)
-    if s != nil: return rw_JS_NewString(ctx, cast[cstring](s))
-    return rw_JS_NewString(ctx, "rwebview")
+    if s != nil: return ctx.newString(cast[cstring](s))
+    return ctx.newString("rwebview")
   of 0x1F01'u32:  # RENDERER
     let s = glGetString(pname)
-    if s != nil: return rw_JS_NewString(ctx, cast[cstring](s))
-    return rw_JS_NewString(ctx, "rwebview OpenGL")
+    if s != nil: return ctx.newString(cast[cstring](s))
+    return ctx.newString("rwebview OpenGL")
+  of 0x9245'u32:  # UNMASKED_VENDOR_WEBGL (WEBGL_debug_renderer_info)
+    let s = glGetString(0x1F00'u32)  # GL_VENDOR
+    if s != nil: return ctx.newString(cast[cstring](s))
+    return ctx.newString("rwebview")
+  of 0x9246'u32:  # UNMASKED_RENDERER_WEBGL (WEBGL_debug_renderer_info)
+    let s = glGetString(0x1F01'u32)  # GL_RENDERER
+    if s != nil: return ctx.newString(cast[cstring](s))
+    return ctx.newString("rwebview OpenGL")
   of 0x1F02'u32:  # VERSION
-    return rw_JS_NewString(ctx, "WebGL 1.0")
+    return ctx.newString("WebGL 1.0")
   of 0x8B8C'u32:  # SHADING_LANGUAGE_VERSION
-    return rw_JS_NewString(ctx, "WebGL GLSL ES 1.0")
+    return ctx.newString("WebGL GLSL ES 1.0")
   of 0x0BA2'u32:  # VIEWPORT
     var v: array[4, GLint]
     glGetIntegerv(pname, addr v[0])
-    let arr = JS_NewArray(ctx)
+    let arr = ctx.newArray()
     for i in 0..3:
-      discard JS_SetPropertyUint32(ctx, arr, uint32(i), rw_JS_NewInt32(ctx, v[i]))
+      ctx.setIndexSteal(arr, uint32(uint32(i)), ctx.newInt(v[i]))
     return arr
   of 0x0C23'u32:  # COLOR_WRITEMASK
     var v: array[4, GLboolean]
     glGetBooleanv(pname, addr v[0])
-    let arr = JS_NewArray(ctx)
+    let arr = ctx.newArray()
     for i in 0..3:
-      discard JS_SetPropertyUint32(ctx, arr, uint32(i), rw_JS_NewBool(ctx, cint(v[i])))
+      ctx.setIndexSteal(arr, uint32(uint32(i)), ctx.newBool(bool(cint(v[i]))))
     return arr
   of 0x0D3A'u32:  # MAX_VIEWPORT_DIMS
     var v: array[2, GLint]
     glGetIntegerv(pname, addr v[0])
-    let arr = JS_NewArray(ctx)
-    discard JS_SetPropertyUint32(ctx, arr, 0, rw_JS_NewInt32(ctx, v[0]))
-    discard JS_SetPropertyUint32(ctx, arr, 1, rw_JS_NewInt32(ctx, v[1]))
+    let arr = ctx.newArray()
+    ctx.setIndexSteal(arr, uint32(0), ctx.newInt(v[0]))
+    ctx.setIndexSteal(arr, uint32(1), ctx.newInt(v[1]))
     return arr
   of 0x846E'u32:  # ALIASED_LINE_WIDTH_RANGE
     var v: array[2, GLfloat]
     glGetFloatv(pname, addr v[0])
-    let arr = JS_NewArray(ctx)
-    discard JS_SetPropertyUint32(ctx, arr, 0, rw_JS_NewFloat64(ctx, float64(v[0])))
-    discard JS_SetPropertyUint32(ctx, arr, 1, rw_JS_NewFloat64(ctx, float64(v[1])))
+    let arr = ctx.newArray()
+    ctx.setIndexSteal(arr, uint32(0), ctx.newFloat(float64(v[0])))
+    ctx.setIndexSteal(arr, uint32(1), ctx.newFloat(float64(v[1])))
     return arr
   of 0x846D'u32:  # ALIASED_POINT_SIZE_RANGE
     var v: array[2, GLfloat]
     glGetFloatv(pname, addr v[0])
-    let arr = JS_NewArray(ctx)
-    discard JS_SetPropertyUint32(ctx, arr, 0, rw_JS_NewFloat64(ctx, float64(v[0])))
-    discard JS_SetPropertyUint32(ctx, arr, 1, rw_JS_NewFloat64(ctx, float64(v[1])))
+    let arr = ctx.newArray()
+    ctx.setIndexSteal(arr, uint32(0), ctx.newFloat(float64(v[0])))
+    ctx.setIndexSteal(arr, uint32(1), ctx.newFloat(float64(v[1])))
     return arr
+  of 0x0C10'u32:  # SCISSOR_BOX
+    var v: array[4, GLint]
+    glGetIntegerv(pname, addr v[0])
+    let arr = ctx.newArray()
+    for i in 0..3:
+      ctx.setIndexSteal(arr, uint32(uint32(i)), ctx.newInt(v[i]))
+    return arr
+  of 0x8005'u32:  # BLEND_COLOR
+    var v: array[4, GLfloat]
+    glGetFloatv(pname, addr v[0])
+    let arr = ctx.newArray()
+    for i in 0..3:
+      ctx.setIndexSteal(arr, uint32(uint32(i)), ctx.newFloat(float64(v[i])))
+    return arr
+  of 0x0C22'u32:  # COLOR_CLEAR_VALUE
+    var v: array[4, GLfloat]
+    glGetFloatv(pname, addr v[0])
+    let arr = ctx.newArray()
+    for i in 0..3:
+      ctx.setIndexSteal(arr, uint32(uint32(i)), ctx.newFloat(float64(v[i])))
+    return arr
+  of 0x0B70'u32:  # DEPTH_RANGE
+    var v: array[2, GLfloat]
+    glGetFloatv(pname, addr v[0])
+    let arr = ctx.newArray()
+    ctx.setIndexSteal(arr, uint32(0), ctx.newFloat(float64(v[0])))
+    ctx.setIndexSteal(arr, uint32(1), ctx.newFloat(float64(v[1])))
+    return arr
+  of 0x0B73'u32:  # DEPTH_CLEAR_VALUE
+    var v: GLfloat
+    glGetFloatv(pname, addr v)
+    return ctx.newFloat(float64(v))
+  of 0x0B21'u32:  # LINE_WIDTH
+    var v: GLfloat
+    glGetFloatv(pname, addr v)
+    return ctx.newFloat(float64(v))
+  of 0x8038'u32, 0x2A00'u32:  # POLYGON_OFFSET_FACTOR, POLYGON_OFFSET_UNITS
+    var v: GLfloat
+    glGetFloatv(pname, addr v)
+    return ctx.newFloat(float64(v))
+  of 0x80AA'u32:  # SAMPLE_COVERAGE_VALUE
+    var v: GLfloat
+    glGetFloatv(pname, addr v)
+    return ctx.newFloat(float64(v))
   of 0x0B72'u32:  # DEPTH_WRITEMASK
     var v: GLboolean
     glGetBooleanv(pname, addr v)
-    return rw_JS_NewBool(ctx, cint(v))
+    return ctx.newBool(bool(cint(v)))
+  of 0x80AB'u32:  # SAMPLE_COVERAGE_INVERT
+    var v: GLboolean
+    glGetBooleanv(pname, addr v)
+    return ctx.newBool(bool(cint(v)))
   of 0x0BE2'u32:  # BLEND
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x0B44'u32:  # CULL_FACE
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x0B71'u32:  # DEPTH_TEST
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x0BD0'u32:  # DITHER
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x8037'u32:  # POLYGON_OFFSET_FILL
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x80A0'u32:  # SAMPLE_COVERAGE
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x0C11'u32:  # SCISSOR_TEST
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x0B90'u32:  # STENCIL_TEST
-    return rw_JS_NewBool(ctx, cint(glIsEnabled(pname)))
+    return ctx.newBool(bool(cint(glIsEnabled(pname))))
   of 0x9240'u32:  # UNPACK_FLIP_Y_WEBGL
-    return rw_JS_NewBool(ctx, cint(ord(glUnpackFlipY)))
+    return ctx.newBool(bool(cint(ord(glUnpackFlipY))))
   of 0x9241'u32:  # UNPACK_PREMULTIPLY_ALPHA_WEBGL
-    return rw_JS_NewBool(ctx, cint(ord(glUnpackPremultiplyAlpha)))
+    return ctx.newBool(bool(cint(ord(glUnpackPremultiplyAlpha))))
+  of 0x8CA6'u32:  # FRAMEBUFFER_BINDING
+    # Return null (0) when the drawing buffer FBO is bound as "default"
+    if glJSBoundFBO == 0:
+      return ctx.newNull()
+    return jsNewGLHandle(ctx, glJSBoundFBO)
   else:
     # Default: integer query
     var v: GLint
     glGetIntegerv(pname, addr v)
-    return rw_JS_NewInt32(ctx, v)
+    return ctx.newInt(v)
 
-proc jsGlGetExtension(ctx: ptr JSContext; thisVal: JSValue;
-                      argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let name = argStr(ctx, argv, 0)
+proc jsGlGetContextAttributes(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ## Returns a WebGLContextAttributes-like object describing the context
+  ## parameters used at creation time.  PIXI's capability check (`ho()`)
+  ## reads `result.stencil`; it must be truthy for WebGL to be chosen.
+  let obj = ctx.newObject()
+  ctx.setPropSteal(obj, "stencil",                    ctx.newBool(true))
+  ctx.setPropSteal(obj, "antialias",                  ctx.newBool(false))
+  ctx.setPropSteal(obj, "alpha",                      ctx.newBool(true))
+  ctx.setPropSteal(obj, "depth",                      ctx.newBool(true))
+  ctx.setPropSteal(obj, "premultipliedAlpha",         ctx.newBool(true))
+  ctx.setPropSteal(obj, "preserveDrawingBuffer",      ctx.newBool(false))
+  ctx.setPropSteal(obj, "powerPreference",            ctx.newString("default"))
+  ctx.setPropSteal(obj, "failIfMajorPerformanceCaveat", ctx.newBool(false))
+  return obj
+
+# jsGlGetExtension and jsGlGetSupportedExtensions are defined AFTER the
+# instanced-rendering procs below because they reference jsGlDrawArraysInstanced
+# etc. (Nim requires procs to be declared before use).
+
+proc jsGlHint(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  # WebGL spec says hint() accepts target and mode but implementations may ignore.
+  ctx.newUndefined()
+
+proc jsGlGetShaderPrecisionFormat(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let obj = ctx.newObject()
+  if glGetShaderPrecisionFormat != nil:
+    let shaderType = GLenum(ctx.toUint32(args[0]))
+    let precisionType = GLenum(ctx.toUint32(args[1]))
+    var range: array[2, GLint]
+    var precision: GLint
+    glGetShaderPrecisionFormat(shaderType, precisionType, addr range[0], addr precision)
+    ctx.setPropSteal(obj, "rangeMin", ctx.newInt(range[0]))
+    ctx.setPropSteal(obj, "rangeMax", ctx.newInt(range[1]))
+    ctx.setPropSteal(obj, "precision", ctx.newInt(precision))
+  else:
+    # GL 3.3 may not have this function; return sensible defaults
+    ctx.setPropSteal(obj, "rangeMin", ctx.newInt(127))
+    ctx.setPropSteal(obj, "rangeMax", ctx.newInt(127))
+    ctx.setPropSteal(obj, "precision", ctx.newInt(23))
+  obj
+
+proc jsGlIsContextLost(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  ctx.newBool(false)
+
+# ── Instanced rendering (ANGLE_instanced_arrays extension) ───────────────
+
+proc jsGlDrawArraysInstanced(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  if glDrawArraysInstanced != nil:
+    glDrawArraysInstanced(GLenum(ctx.toUint32(args[0])), GLint(ctx.toInt32(args[1])),
+                          GLsizei(ctx.toInt32(args[2])), GLsizei(ctx.toInt32(args[3])))
+  ctx.newUndefined()
+
+proc jsGlDrawElementsInstanced(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  if glDrawElementsInstanced != nil:
+    glDrawElementsInstanced(GLenum(ctx.toUint32(args[0])), GLsizei(ctx.toInt32(args[1])),
+                            GLenum(ctx.toUint32(args[2])),
+                            cast[pointer](ctx.toInt32(args[3])),
+                            GLsizei(ctx.toInt32(args[4])))
+  ctx.newUndefined()
+
+proc jsGlVertexAttribDivisor(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  if glVertexAttribDivisor != nil:
+    glVertexAttribDivisor(GLuint(ctx.toUint32(args[0])), GLuint(ctx.toUint32(args[1])))
+  ctx.newUndefined()
+
+proc jsGlGetExtension(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let name = ctx.toNimString(args[0])
   case name
   of "OES_element_index_uint", "OES_texture_float",
      "OES_texture_float_linear", "OES_standard_derivatives",
      "EXT_shader_texture_lod", "EXT_frag_depth",
      "EXT_blend_minmax":
-    return JS_NewObject(ctx)
+    return ctx.newObject()
   of "OES_texture_half_float":
-    let obj = JS_NewObject(ctx)
-    discard JS_SetPropertyStr(ctx, obj, "HALF_FLOAT_OES", rw_JS_NewInt32(ctx, 0x8D61))
+    let obj = ctx.newObject()
+    ctx.setPropSteal(obj, "HALF_FLOAT_OES", ctx.newInt(0x8D61))
     return obj
   of "OES_texture_half_float_linear":
-    return JS_NewObject(ctx)
+    return ctx.newObject()
   of "OES_vertex_array_object":
-    # GL 3.3 Core has native VAO support; expose as OES extension
-    let obj = JS_NewObject(ctx)
-    # Stub methods — these call the real GL functions via __rw_* natives
-    # installed during bindWebGL
-    return obj
+    # Return null so PIXI uses its software VAO fallback (manually calls
+    # vertexAttribPointer each frame) instead of trying to call
+    # createVertexArrayOES() on an empty stub object and crashing.
+    return ctx.newNull()
   of "ANGLE_instanced_arrays":
-    let obj = JS_NewObject(ctx)
+    let obj = ctx.newObject()
+    # WebGL1 engines (PIXI v5/v6 in WebGL1 mode) get the ANGLE extension and
+    # call the *ANGLE-suffixed* methods on it instead of the core GL3.3 names.
+    # We reuse the same native implementations that are bound directly on the
+    # context object (jsGlDrawArraysInstanced etc.) since they are stateless
+    # procs that just call through to the OpenGL function pointers.
+    let daiFn = ctx.newFunction("drawArraysInstancedANGLE", jsGlDrawArraysInstanced, 4)
+    ctx.setPropSteal(obj, "drawArraysInstancedANGLE", daiFn)
+    let deiFn = ctx.newFunction("drawElementsInstancedANGLE", jsGlDrawElementsInstanced, 5)
+    ctx.setPropSteal(obj, "drawElementsInstancedANGLE", deiFn)
+    let vadFn = ctx.newFunction("vertexAttribDivisorANGLE", jsGlVertexAttribDivisor, 2)
+    ctx.setPropSteal(obj, "vertexAttribDivisorANGLE", vadFn)
     return obj
   of "WEBGL_lose_context":
-    let obj = JS_NewObject(ctx)
+    # PIXI's ho() calls `n.loseContext()` after testing; it must be a callable
+    # function or ho() throws a TypeError and returns false.
+    proc jsNoop(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+      return ctx.newUndefined()
+    let obj = ctx.newObject()
+    let lc = ctx.newFunction("loseContext", jsNoop, int(0))
+    ctx.setPropSteal(obj, "loseContext", lc)
+    let rc = ctx.newFunction("restoreContext", jsNoop, int(0))
+    ctx.setPropSteal(obj, "restoreContext", rc)
     return obj
   of "WEBGL_depth_texture":
-    return JS_NewObject(ctx)
+    return ctx.newObject()
+  of "WEBGL_debug_renderer_info":
+    # Exposes UNMASKED_VENDOR_WEBGL (0x9245) and UNMASKED_RENDERER_WEBGL (0x9246)
+    # as integer enum constants on the extension object.  Callers pass these
+    # constants back to gl.getParameter() to get the real GPU vendor/renderer.
+    let obj = ctx.newObject()
+    ctx.setPropSteal(obj, "UNMASKED_VENDOR_WEBGL",   ctx.newInt(0x9245))
+    ctx.setPropSteal(obj, "UNMASKED_RENDERER_WEBGL", ctx.newInt(0x9246))
+    return obj
   else:
-    return rw_JS_Null()
+    return ctx.newNull()
 
-proc jsGlGetShaderPrecisionFormat(ctx: ptr JSContext; thisVal: JSValue;
-                                 argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  let obj = JS_NewObject(ctx)
-  if glGetShaderPrecisionFormat != nil:
-    let shaderType = GLenum(argU32(ctx, argv, 0))
-    let precisionType = GLenum(argU32(ctx, argv, 1))
-    var range: array[2, GLint]
-    var precision: GLint
-    glGetShaderPrecisionFormat(shaderType, precisionType, addr range[0], addr precision)
-    discard JS_SetPropertyStr(ctx, obj, "rangeMin", rw_JS_NewInt32(ctx, range[0]))
-    discard JS_SetPropertyStr(ctx, obj, "rangeMax", rw_JS_NewInt32(ctx, range[1]))
-    discard JS_SetPropertyStr(ctx, obj, "precision", rw_JS_NewInt32(ctx, precision))
-  else:
-    # GL 3.3 may not have this function; return sensible defaults
-    discard JS_SetPropertyStr(ctx, obj, "rangeMin", rw_JS_NewInt32(ctx, 127))
-    discard JS_SetPropertyStr(ctx, obj, "rangeMax", rw_JS_NewInt32(ctx, 127))
-    discard JS_SetPropertyStr(ctx, obj, "precision", rw_JS_NewInt32(ctx, 23))
-  obj
-
-proc jsGlIsContextLost(ctx: ptr JSContext; thisVal: JSValue;
-                       argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  rw_JS_False()
-
-# ── Instanced rendering (ANGLE_instanced_arrays extension) ───────────────
-
-proc jsGlDrawArraysInstanced(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if glDrawArraysInstanced != nil:
-    glDrawArraysInstanced(GLenum(argU32(ctx, argv, 0)), GLint(argI32(ctx, argv, 1)),
-                          GLsizei(argI32(ctx, argv, 2)), GLsizei(argI32(ctx, argv, 3)))
-  rw_JS_Undefined()
-
-proc jsGlDrawElementsInstanced(ctx: ptr JSContext; thisVal: JSValue;
-                               argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if glDrawElementsInstanced != nil:
-    glDrawElementsInstanced(GLenum(argU32(ctx, argv, 0)), GLsizei(argI32(ctx, argv, 1)),
-                            GLenum(argU32(ctx, argv, 2)),
-                            cast[pointer](argI32(ctx, argv, 3)),
-                            GLsizei(argI32(ctx, argv, 4)))
-  rw_JS_Undefined()
-
-proc jsGlVertexAttribDivisor(ctx: ptr JSContext; thisVal: JSValue;
-                             argc: cint; argv: ptr JSValue): JSValue {.cdecl.} =
-  if glVertexAttribDivisor != nil:
-    glVertexAttribDivisor(GLuint(argU32(ctx, argv, 0)), GLuint(argU32(ctx, argv, 1)))
-  rw_JS_Undefined()
+proc jsGlGetSupportedExtensions(ctx: ptr ScriptCtx; this: ScriptValue;
+                      args: openArray[ScriptValue]): ScriptValue =
+  let arr = ctx.newArray()
+  const exts = [
+    "OES_element_index_uint", "OES_texture_float",
+    "OES_texture_float_linear", "OES_standard_derivatives",
+    "OES_texture_half_float", "OES_texture_half_float_linear",
+    "EXT_shader_texture_lod", "EXT_frag_depth",
+    "EXT_blend_minmax", "ANGLE_instanced_arrays",
+    "WEBGL_lose_context", "WEBGL_depth_texture",
+    "WEBGL_debug_renderer_info"
+  ]
+  for i, name in exts:
+    ctx.setIndexSteal(arr, uint32(uint32(i)), ctx.newString(name))
+  arr
 
 # ── bindWebGL — create GL context JS object with all methods + constants ──
 
@@ -1303,156 +1986,169 @@ type C2dBlitTex = object
   lastH: int
 var c2dBlitProg:     GLuint = 0
 var c2dBlitVAO2d:    GLuint = 0
+var c2dBlitVAO_fbo:  GLuint = 0   # FBO blit quad (non-flipped UVs for GL textures)
 var c2dBlitVBO:      GLuint = 0
+var c2dBlitVBO_fbo:  GLuint = 0
 var c2dBlitTextures: seq[C2dBlitTex]
 var c2dBlitTexLoc:   GLint  = -1  # cached uniform location — set once at init
 
-proc bindWebGL(state: ptr RWebviewState) =
+proc bindWebGL*(ctx: ptr ScriptCtx; width, height: int32) =
   ## Create the WebGL context JS object with all methods and constants,
   ## then store as __rw_glContext global.
-  let ctx = state.jsCtx
-  let global = JS_GetGlobalObject(ctx)
-  let glObj = JS_NewObject(ctx)
+  let global = ctx.getGlobal()
+  let glObj = ctx.newObject()
   # Reset blit texture cache on each page load
   c2dBlitTextures = @[]
+  resetGLStateCache()
 
-  # drawingBufferWidth / drawingBufferHeight
-  discard JS_SetPropertyStr(ctx, glObj, "drawingBufferWidth", rw_JS_NewInt32(ctx, state.width))
-  discard JS_SetPropertyStr(ctx, glObj, "drawingBufferHeight", rw_JS_NewInt32(ctx, state.height))
+  # Create / resize the off-screen drawing buffer FBO at the game resolution.
+  # WebGL apps render to this; we composite to the real window each frame.
+  initDrawingBuffer(width, height)
+
+  # drawingBufferWidth / drawingBufferHeight (match the drawing buffer)
+  ctx.setPropSteal(glObj, "drawingBufferWidth", ctx.newInt(width))
+  ctx.setPropSteal(glObj, "drawingBufferHeight", ctx.newInt(height))
 
   # Install all gl.* native method bindings
-  template glFn(jsName: cstring; fn: JSCFunction; nargs: cint) =
-    let f = JS_NewCFunction(ctx, fn, jsName, nargs)
-    discard JS_SetPropertyStr(ctx, glObj, jsName, f)
+  template glFn(jsName: cstring; fn: ScriptNativeProc; nargs: int) =
+    ctx.bindMethod(glObj, jsName, fn, nargs)
 
   # State
-  glFn("viewport",            cast[JSCFunction](jsGlViewport), 4)
-  glFn("clearColor",          cast[JSCFunction](jsGlClearColor), 4)
-  glFn("clear",               cast[JSCFunction](jsGlClear), 1)
-  glFn("enable",              cast[JSCFunction](jsGlEnable), 1)
-  glFn("disable",             cast[JSCFunction](jsGlDisable), 1)
-  glFn("blendFunc",           cast[JSCFunction](jsGlBlendFunc), 2)
-  glFn("blendFuncSeparate",   cast[JSCFunction](jsGlBlendFuncSeparate), 4)
-  glFn("blendEquation",       cast[JSCFunction](jsGlBlendEquation), 1)
-  glFn("blendEquationSeparate", cast[JSCFunction](jsGlBlendEquationSeparate), 2)
-  glFn("blendColor",          cast[JSCFunction](jsGlBlendColor), 4)
-  glFn("depthFunc",           cast[JSCFunction](jsGlDepthFunc), 1)
-  glFn("depthMask",           cast[JSCFunction](jsGlDepthMask), 1)
-  glFn("depthRange",          cast[JSCFunction](jsGlDepthRange), 2)
-  glFn("clearDepth",          cast[JSCFunction](jsGlClearDepth), 1)
-  glFn("cullFace",            cast[JSCFunction](jsGlCullFace), 1)
-  glFn("frontFace",           cast[JSCFunction](jsGlFrontFace), 1)
-  glFn("scissor",             cast[JSCFunction](jsGlScissor), 4)
-  glFn("lineWidth",           cast[JSCFunction](jsGlLineWidth), 1)
-  glFn("colorMask",           cast[JSCFunction](jsGlColorMask), 4)
-  glFn("stencilFunc",         cast[JSCFunction](jsGlStencilFunc), 3)
-  glFn("stencilFuncSeparate", cast[JSCFunction](jsGlStencilFuncSeparate), 4)
-  glFn("stencilOp",           cast[JSCFunction](jsGlStencilOp), 3)
-  glFn("stencilOpSeparate",   cast[JSCFunction](jsGlStencilOpSeparate), 4)
-  glFn("stencilMask",         cast[JSCFunction](jsGlStencilMask), 1)
-  glFn("stencilMaskSeparate", cast[JSCFunction](jsGlStencilMaskSeparate), 2)
-  glFn("clearStencil",        cast[JSCFunction](jsGlClearStencil), 1)
-  glFn("pixelStorei",         cast[JSCFunction](jsGlPixelStorei), 2)
-  glFn("flush",               cast[JSCFunction](jsGlFlush), 0)
-  glFn("finish",              cast[JSCFunction](jsGlFinish), 0)
-  glFn("getError",            cast[JSCFunction](jsGlGetError), 0)
-  glFn("isEnabled",           cast[JSCFunction](jsGlIsEnabled), 1)
+  glFn("viewport",            jsGlViewport, 4)
+  glFn("clearColor",          jsGlClearColor, 4)
+  glFn("clear",               jsGlClear, 1)
+  glFn("enable",              jsGlEnable, 1)
+  glFn("disable",             jsGlDisable, 1)
+  glFn("blendFunc",           jsGlBlendFunc, 2)
+  glFn("blendFuncSeparate",   jsGlBlendFuncSeparate, 4)
+  glFn("blendEquation",       jsGlBlendEquation, 1)
+  glFn("blendEquationSeparate", jsGlBlendEquationSeparate, 2)
+  glFn("blendColor",          jsGlBlendColor, 4)
+  glFn("depthFunc",           jsGlDepthFunc, 1)
+  glFn("depthMask",           jsGlDepthMask, 1)
+  glFn("depthRange",          jsGlDepthRange, 2)
+  glFn("clearDepth",          jsGlClearDepth, 1)
+  glFn("cullFace",            jsGlCullFace, 1)
+  glFn("frontFace",           jsGlFrontFace, 1)
+  glFn("scissor",             jsGlScissor, 4)
+  glFn("lineWidth",           jsGlLineWidth, 1)
+  glFn("colorMask",           jsGlColorMask, 4)
+  glFn("stencilFunc",         jsGlStencilFunc, 3)
+  glFn("stencilFuncSeparate", jsGlStencilFuncSeparate, 4)
+  glFn("stencilOp",           jsGlStencilOp, 3)
+  glFn("stencilOpSeparate",   jsGlStencilOpSeparate, 4)
+  glFn("stencilMask",         jsGlStencilMask, 1)
+  glFn("stencilMaskSeparate", jsGlStencilMaskSeparate, 2)
+  glFn("clearStencil",        jsGlClearStencil, 1)
+  glFn("pixelStorei",         jsGlPixelStorei, 2)
+  glFn("flush",               jsGlFlush, 0)
+  glFn("finish",              jsGlFinish, 0)
+  glFn("getError",            jsGlGetError, 0)
+  glFn("isEnabled",           jsGlIsEnabled, 1)
   # Shaders & Programs
-  glFn("createShader",        cast[JSCFunction](jsGlCreateShader), 1)
-  glFn("deleteShader",        cast[JSCFunction](jsGlDeleteShader), 1)
-  glFn("shaderSource",        cast[JSCFunction](jsGlShaderSource), 2)
-  glFn("compileShader",       cast[JSCFunction](jsGlCompileShader), 1)
-  glFn("getShaderParameter",  cast[JSCFunction](jsGlGetShaderParameter), 2)
-  glFn("getShaderInfoLog",    cast[JSCFunction](jsGlGetShaderInfoLog), 1)
-  glFn("createProgram",       cast[JSCFunction](jsGlCreateProgram), 0)
-  glFn("deleteProgram",       cast[JSCFunction](jsGlDeleteProgram), 1)
-  glFn("attachShader",        cast[JSCFunction](jsGlAttachShader), 2)
-  glFn("detachShader",        cast[JSCFunction](jsGlDetachShader), 2)
-  glFn("linkProgram",         cast[JSCFunction](jsGlLinkProgram), 1)
-  glFn("getProgramParameter", cast[JSCFunction](jsGlGetProgramParameter), 2)
-  glFn("getProgramInfoLog",   cast[JSCFunction](jsGlGetProgramInfoLog), 1)
-  glFn("useProgram",          cast[JSCFunction](jsGlUseProgram), 1)
-  glFn("validateProgram",     cast[JSCFunction](jsGlValidateProgram), 1)
+  glFn("createShader",        jsGlCreateShader, 1)
+  glFn("deleteShader",        jsGlDeleteShader, 1)
+  glFn("shaderSource",        jsGlShaderSource, 2)
+  glFn("compileShader",       jsGlCompileShader, 1)
+  glFn("getShaderParameter",  jsGlGetShaderParameter, 2)
+  glFn("getShaderInfoLog",    jsGlGetShaderInfoLog, 1)
+  glFn("createProgram",       jsGlCreateProgram, 0)
+  glFn("deleteProgram",       jsGlDeleteProgram, 1)
+  glFn("attachShader",        jsGlAttachShader, 2)
+  glFn("detachShader",        jsGlDetachShader, 2)
+  glFn("linkProgram",         jsGlLinkProgram, 1)
+  glFn("getProgramParameter", jsGlGetProgramiv, 2)
+  glFn("getProgramInfoLog",   jsGlGetProgramInfoLog, 1)
+  glFn("useProgram",          jsGlUseProgram, 1)
+  glFn("validateProgram",     jsGlValidateProgram, 1)
   # Attributes
-  glFn("getAttribLocation",   cast[JSCFunction](jsGlGetAttribLocation), 2)
-  glFn("bindAttribLocation",  cast[JSCFunction](jsGlBindAttribLocation), 3)
-  glFn("enableVertexAttribArray",  cast[JSCFunction](jsGlEnableVertexAttribArray), 1)
-  glFn("disableVertexAttribArray", cast[JSCFunction](jsGlDisableVertexAttribArray), 1)
-  glFn("vertexAttribPointer", cast[JSCFunction](jsGlVertexAttribPointer), 6)
-  glFn("getActiveAttrib",     cast[JSCFunction](jsGlGetActiveAttrib), 2)
-  glFn("getActiveUniform",    cast[JSCFunction](jsGlGetActiveUniform), 2)
+  glFn("getAttribLocation",   jsGlGetAttribLocation, 2)
+  glFn("bindAttribLocation",  jsGlBindAttribLocation, 3)
+  glFn("enableVertexAttribArray",  jsGlEnableVertexAttribArray, 1)
+  glFn("disableVertexAttribArray", jsGlDisableVertexAttribArray, 1)
+  glFn("vertexAttribPointer", jsGlVertexAttribPointer, 6)
+  glFn("getActiveAttrib",     jsGlGetActiveAttrib, 2)
+  glFn("getActiveUniform",    jsGlGetActiveUniform, 2)
   # Uniforms
-  glFn("getUniformLocation",  cast[JSCFunction](jsGlGetUniformLocation), 2)
-  glFn("uniform1f",           cast[JSCFunction](jsGlUniform1f), 2)
-  glFn("uniform2f",           cast[JSCFunction](jsGlUniform2f), 3)
-  glFn("uniform3f",           cast[JSCFunction](jsGlUniform3f), 4)
-  glFn("uniform4f",           cast[JSCFunction](jsGlUniform4f), 5)
-  glFn("uniform1i",           cast[JSCFunction](jsGlUniform1i), 2)
-  glFn("uniform2i",           cast[JSCFunction](jsGlUniform2i), 3)
-  glFn("uniform3i",           cast[JSCFunction](jsGlUniform3i), 4)
-  glFn("uniform4i",           cast[JSCFunction](jsGlUniform4i), 5)
-  glFn("uniform1fv",          cast[JSCFunction](jsGlUniform1fv), 2)
-  glFn("uniform2fv",          cast[JSCFunction](jsGlUniform2fv), 2)
-  glFn("uniform3fv",          cast[JSCFunction](jsGlUniform3fv), 2)
-  glFn("uniform4fv",          cast[JSCFunction](jsGlUniform4fv), 2)
-  glFn("uniform1iv",          cast[JSCFunction](jsGlUniform1iv), 2)
-  glFn("uniform2iv",          cast[JSCFunction](jsGlUniform2iv), 2)
-  glFn("uniform3iv",          cast[JSCFunction](jsGlUniform3iv), 2)
-  glFn("uniform4iv",          cast[JSCFunction](jsGlUniform4iv), 2)
-  glFn("uniformMatrix2fv",    cast[JSCFunction](jsGlUniformMatrix2fv), 3)
-  glFn("uniformMatrix3fv",    cast[JSCFunction](jsGlUniformMatrix3fv), 3)
-  glFn("uniformMatrix4fv",    cast[JSCFunction](jsGlUniformMatrix4fv), 3)
+  glFn("getUniformLocation",  jsGlGetUniformLocation, 2)
+  glFn("uniform1f",           jsGlUniform1f, 2)
+  glFn("uniform2f",           jsGlUniform2f, 3)
+  glFn("uniform3f",           jsGlUniform3f, 4)
+  glFn("uniform4f",           jsGlUniform4f, 5)
+  glFn("uniform1i",           jsGlUniform1i, 2)
+  glFn("uniform2i",           jsGlUniform2i, 3)
+  glFn("uniform3i",           jsGlUniform3i, 4)
+  glFn("uniform4i",           jsGlUniform4i, 5)
+  glFn("uniform1fv",          jsGlUniform1fv, 2)
+  glFn("uniform2fv",          jsGlUniform2fv, 2)
+  glFn("uniform3fv",          jsGlUniform3fv, 2)
+  glFn("uniform4fv",          jsGlUniform4fv, 2)
+  glFn("uniform1iv",          jsGlUniform1iv, 2)
+  glFn("uniform2iv",          jsGlUniform2iv, 2)
+  glFn("uniform3iv",          jsGlUniform3iv, 2)
+  glFn("uniform4iv",          jsGlUniform4iv, 2)
+  glFn("uniformMatrix2fv",    jsGlUniformMatrix2fv, 3)
+  glFn("uniformMatrix3fv",    jsGlUniformMatrix3fv, 3)
+  glFn("uniformMatrix4fv",    jsGlUniformMatrix4fv, 3)
   # Buffers
-  glFn("createBuffer",        cast[JSCFunction](jsGlCreateBuffer), 0)
-  glFn("deleteBuffer",        cast[JSCFunction](jsGlDeleteBuffer), 1)
-  glFn("bindBuffer",          cast[JSCFunction](jsGlBindBuffer), 2)
-  glFn("bufferData",          cast[JSCFunction](jsGlBufferData), 3)
-  glFn("bufferSubData",       cast[JSCFunction](jsGlBufferSubData), 3)
+  glFn("createBuffer",        jsGlCreateBuffer, 0)
+  glFn("deleteBuffer",        jsGlDeleteBuffer, 1)
+  glFn("bindBuffer",          jsGlBindBuffer, 2)
+  glFn("bufferData",          jsGlBufferData, 3)
+  glFn("bufferSubData",       jsGlBufferSubData, 3)
   # Textures
-  glFn("createTexture",       cast[JSCFunction](jsGlCreateTexture), 0)
-  glFn("deleteTexture",       cast[JSCFunction](jsGlDeleteTexture), 1)
-  glFn("bindTexture",         cast[JSCFunction](jsGlBindTexture), 2)
-  glFn("activeTexture",       cast[JSCFunction](jsGlActiveTexture), 1)
-  glFn("texImage2D",          cast[JSCFunction](jsGlTexImage2D), 9)
-  glFn("texSubImage2D",       cast[JSCFunction](jsGlTexSubImage2D), 9)
-  glFn("texParameteri",       cast[JSCFunction](jsGlTexParameteri), 3)
-  glFn("texParameterf",       cast[JSCFunction](jsGlTexParameterf), 3)
-  glFn("generateMipmap",      cast[JSCFunction](jsGlGenerateMipmap), 1)
+  glFn("createTexture",       jsGlCreateTexture, 0)
+  glFn("deleteTexture",       jsGlDeleteTexture, 1)
+  glFn("bindTexture",         jsGlBindTexture, 2)
+  glFn("activeTexture",       jsGlActiveTexture, 1)
+  glFn("texImage2D",          jsGlTexImage2D, 9)
+  glFn("texSubImage2D",       jsGlTexSubImage2D, 9)
+  glFn("texParameteri",       jsGlTexParameteri, 3)
+  glFn("texParameterf",       jsGlTexParameterf, 3)
+  glFn("generateMipmap",      jsGlGenerateMipmap, 1)
+  glFn("copyTexImage2D",      jsGlCopyTexImage2D, 8)
+  glFn("copyTexSubImage2D",   jsGlCopyTexSubImage2D, 8)
   # Framebuffers
-  glFn("createFramebuffer",   cast[JSCFunction](jsGlCreateFramebuffer), 0)
-  glFn("deleteFramebuffer",   cast[JSCFunction](jsGlDeleteFramebuffer), 1)
-  glFn("bindFramebuffer",     cast[JSCFunction](jsGlBindFramebuffer), 2)
-  glFn("framebufferTexture2D", cast[JSCFunction](jsGlFramebufferTexture2D), 5)
-  glFn("framebufferRenderbuffer", cast[JSCFunction](jsGlFramebufferRenderbuffer), 4)
-  glFn("checkFramebufferStatus", cast[JSCFunction](jsGlCheckFramebufferStatus), 1)
+  glFn("createFramebuffer",   jsGlCreateFramebuffer, 0)
+  glFn("deleteFramebuffer",   jsGlDeleteFramebuffer, 1)
+  glFn("bindFramebuffer",     jsGlBindFramebuffer, 2)
+  glFn("framebufferTexture2D", jsGlFramebufferTexture2D, 5)
+  glFn("framebufferRenderbuffer", jsGlFramebufferRenderbuffer, 4)
+  glFn("checkFramebufferStatus", jsGlCheckFramebufferStatus, 1)
   # Renderbuffers
-  glFn("createRenderbuffer",  cast[JSCFunction](jsGlCreateRenderbuffer), 0)
-  glFn("deleteRenderbuffer",  cast[JSCFunction](jsGlDeleteRenderbuffer), 1)
-  glFn("bindRenderbuffer",    cast[JSCFunction](jsGlBindRenderbuffer), 2)
-  glFn("renderbufferStorage", cast[JSCFunction](jsGlRenderbufferStorage), 4)
+  glFn("createRenderbuffer",  jsGlCreateRenderbuffer, 0)
+  glFn("deleteRenderbuffer",  jsGlDeleteRenderbuffer, 1)
+  glFn("bindRenderbuffer",    jsGlBindRenderbuffer, 2)
+  glFn("renderbufferStorage", jsGlRenderbufferStorage, 4)
   # Drawing
-  glFn("drawArrays",          cast[JSCFunction](jsGlDrawArrays), 3)
-  glFn("drawElements",        cast[JSCFunction](jsGlDrawElements), 4)
+  glFn("drawArrays",          jsGlDrawArrays, 3)
+  glFn("drawElements",        jsGlDrawElements, 4)
   # Reading
-  glFn("readPixels",          cast[JSCFunction](jsGlReadPixels), 7)
+  glFn("readPixels",          jsGlReadPixels, 7)
   # Query
-  glFn("getParameter",        cast[JSCFunction](jsGlGetParameter), 1)
-  glFn("getExtension",        cast[JSCFunction](jsGlGetExtension), 1)
-  glFn("getShaderPrecisionFormat", cast[JSCFunction](jsGlGetShaderPrecisionFormat), 2)
-  glFn("isContextLost",       cast[JSCFunction](jsGlIsContextLost), 0)
+  glFn("getParameter",        jsGlGetParameter, 1)
+  glFn("getExtension",        jsGlGetExtension, 1)
+  glFn("getSupportedExtensions", jsGlGetSupportedExtensions, 0)
+  glFn("hint",                jsGlHint, 2)
+  glFn("getShaderPrecisionFormat", jsGlGetShaderPrecisionFormat, 2)
+  glFn("getContextAttributes", jsGlGetContextAttributes, 0)
+  glFn("isContextLost",       jsGlIsContextLost, 0)
   # Instanced rendering
-  glFn("drawArraysInstanced", cast[JSCFunction](jsGlDrawArraysInstanced), 4)
-  glFn("drawElementsInstanced", cast[JSCFunction](jsGlDrawElementsInstanced), 5)
-  glFn("vertexAttribDivisor", cast[JSCFunction](jsGlVertexAttribDivisor), 2)
+  glFn("drawArraysInstanced", jsGlDrawArraysInstanced, 4)
+  glFn("drawElementsInstanced", jsGlDrawElementsInstanced, 5)
+  glFn("vertexAttribDivisor", jsGlVertexAttribDivisor, 2)
 
   # Store as global __rw_glContext
-  discard JS_SetPropertyStr(ctx, global, "__rw_glContext", glObj)
-  rw_JS_FreeValue(ctx, global)
+  ctx.setPropSteal(global, "__rw_glContext", glObj)
+  # Register drawing buffer helpers as globals
+  ctx.bindGlobal("__rw_resizeDrawingBuffer", jsResizeDrawingBuffer, 2)
+  ctx.bindGlobal("__rw_setWebGLActive", jsSetWebGLActive, 0)
+  ctx.bindGlobal("__rw_setForceCanvas", jsSetForceCanvas, 0)
+  ctx.freeValue(global)
 
   # Eval the constants JS to set all WebGL enum constants on the context object
-  let constRet = JS_Eval(ctx, cstring(glConstantsJS), csize_t(glConstantsJS.len),
-                         "<gl-constants>", JS_EVAL_TYPE_GLOBAL)
-  discard jsCheck(ctx, constRet, "<gl-constants>")
+  let constRet = ctx.eval(cstring(glConstantsJS), "<gl-constants>")
+  discard ctx.checkException(constRet, "<gl-constants>")
 
 # ===========================================================================
 # Phase 5 — Canvas 2D → OpenGL fullscreen blit
@@ -1536,7 +2232,34 @@ proc initCanvas2dBlit() =
   glEnableVertexAttribArray(0)
   glVertexAttribPointer(1, 2, 0x1406.GLenum, 0.GLboolean, 16, cast[pointer](8))
   glEnableVertexAttribArray(1)
+  # FBO blit quad — standard GL texture orientation (V=0 at bottom).
+  # For FBO color attachments, (0,0) is bottom-left, matching GL convention.
+  let vertsFBO: array[24, float32] = [
+    -1.0f,  1.0f,  0.0f, 1.0f,   # top-left     (UV for texture top)
+    -1.0f, -1.0f,  0.0f, 0.0f,   # bottom-left  (UV for texture bottom)
+     1.0f, -1.0f,  1.0f, 0.0f,   # bottom-right
+    -1.0f,  1.0f,  0.0f, 1.0f,   # top-left
+     1.0f, -1.0f,  1.0f, 0.0f,   # bottom-right
+     1.0f,  1.0f,  1.0f, 1.0f,   # top-right
+  ]
+  glGenVertexArrays(1, addr c2dBlitVAO_fbo)
+  glBindVertexArray(c2dBlitVAO_fbo)
+  glGenBuffers(1, addr c2dBlitVBO_fbo)
+  glBindBuffer(0x8892.GLenum, c2dBlitVBO_fbo)
+  glBufferData(0x8892.GLenum, sizeof(vertsFBO), unsafeAddr vertsFBO[0], 0x88E4.GLenum)
+  glVertexAttribPointer(0, 2, 0x1406.GLenum, 0.GLboolean, 16, nil)
+  glEnableVertexAttribArray(0)
+  glVertexAttribPointer(1, 2, 0x1406.GLenum, 0.GLboolean, 16, cast[pointer](8))
+  glEnableVertexAttribArray(1)
   glBindVertexArray(glDefaultVAO)
+  # Unbind the array buffer so the JS-side GL cache stays consistent.
+  # initCanvas2dBlit natively bound c2dBlitVBO_fbo; if we leave it bound,
+  # the cache still holds the ID of whatever the JS app (PIXI) last bound,
+  # and PIXI's next gl.bindBuffer(ARRAY_BUFFER, ...) call would be skipped
+  # as a "redundant" rebind — causing PIXI to record the blit VBO as the
+  # source for its vertex attributes and rendering nothing. Reset to 0.
+  glBindBuffer(0x8892.GLenum, 0)    # GL_ARRAY_BUFFER = 0
+  glCacheArrayBuf = 0
 
 var c2dBlitLogOnce: bool = false
 
@@ -1554,16 +2277,17 @@ const OV_W = 520
 const OV_H = 22
 var ovPixels: array[OV_W * OV_H * 4, uint8]
 var ovTexId:      GLuint       = 0
-var ovFont:       ptr TTF_Font = nil
+var ovFontLoaded: bool         = false
 var ovGpuQueried: bool         = false
 
 proc drawNativeOverlay(winW, winH: int) =
   ## Render the F2 status bar (FPS + resolution + GPU) and blit at top-left
   ## of the letterboxed game viewport using a small GL viewport trick.
-  if ovFont == nil:
-    if ttfInitialized and defaultFontPath != "":
-      ovFont = TTF_OpenFont(cstring(defaultFontPath), cfloat(13.0))
-  if ovFont == nil: return
+  if not ovFontLoaded:
+    if fonsInitialized and defaultFontPath != "":
+      let fid = getOrLoadFonsFont("__overlay__", 13.0f, "")
+      ovFontLoaded = fid >= 0
+  if not ovFontLoaded: return
   # Fill semi-transparent black background
   const bgA = 180u8
   for i in 0..<OV_W * OV_H:
@@ -1571,32 +2295,37 @@ proc drawNativeOverlay(winW, winH: int) =
     ovPixels[i*4+2] = 0; ovPixels[i*4+3] = bgA
   # Compose info line matching testmedia.html style
   let fpsCol =
-    if c2dFpsDisplay >= 55: SDL_Color(r: 160, g: 255, b: 160, a: 255)
-    elif c2dFpsDisplay >= 45: SDL_Color(r: 255, g: 230, b: 80,  a: 255)
-    else:                     SDL_Color(r: 255, g: 100, b: 100, a: 255)
+    if c2dFpsDisplay >= 55: (r: 160u8, g: 255u8, b: 160u8)
+    elif c2dFpsDisplay >= 45: (r: 255u8, g: 230u8, b: 80u8)
+    else:                     (r: 255u8, g: 100u8, b: 100u8)
   let gpuShort = if c2dGpuName.len > 30: c2dGpuName[0..28] & "\xe2\x80\xa6" else: c2dGpuName
+  let modeTag = if gForceCanvasMode: "Canvas (forced)"
+                elif gWebGLActive:   "WebGL"
+                else:                "Canvas"
   let line = "FPS:" & $c2dFpsDisplay &
              "  " & $c2dBlitVpW & "x" & $c2dBlitVpH &
+             "  [" & modeTag & "]" &
              "  [GPU] " & gpuShort
-  let rawSurf = TTF_RenderText_Blended(ovFont, cstring(line), 0, fpsCol)
-  if rawSurf != nil:
-    let rgbaSurf = cast[ptr SDL_Surface](SDL_ConvertSurface(rawSurf, SDL_PIXELFORMAT_RGBA32))
-    SDL_DestroySurface(rawSurf)
-    if rgbaSurf != nil:
-      let tw = min(int(rgbaSurf.w), OV_W - 4)
-      let th = min(int(rgbaSurf.h), OV_H)
-      let sp = cast[ptr UncheckedArray[uint8]](rgbaSurf.pixels)
-      for row in 0..<th:
-        let srcRow = cast[ptr UncheckedArray[uint8]](addr sp[row * int(rgbaSurf.pitch)])
-        for col in 0..<tw:
-          let di = (row * OV_W + col + 4) * 4
-          let sa = int(srcRow[col*4+3])
-          if sa > 0:
-            ovPixels[di]   = srcRow[col*4]
-            ovPixels[di+1] = srcRow[col*4+1]
-            ovPixels[di+2] = srcRow[col*4+2]
-            ovPixels[di+3] = uint8(min(255, int(bgA) + sa))
-      SDL_DestroySurface(rgbaSurf)
+  # Render text via fonstash
+  discard getOrLoadFonsFont("__overlay__", 13.0f, "")
+  var tw, th, baselineY: cint
+  let rgbaPtr = rw_fons_render_text_rgba(cstring(line), fpsCol.r, fpsCol.g, fpsCol.b,
+                                          addr tw, addr th, addr baselineY)
+  if rgbaPtr != nil:
+    let sp = cast[ptr UncheckedArray[uint8]](rgbaPtr)
+    let maxTw = min(int(tw), OV_W - 4)
+    let maxTh = min(int(th), OV_H)
+    for row in 0..<maxTh:
+      let srcRow = cast[ptr UncheckedArray[uint8]](addr sp[row * int(tw) * 4])
+      for col in 0..<maxTw:
+        let di = (row * OV_W + col + 4) * 4
+        let sa = int(srcRow[col*4+3])
+        if sa > 0:
+          ovPixels[di]   = srcRow[col*4]
+          ovPixels[di+1] = srcRow[col*4+1]
+          ovPixels[di+2] = srcRow[col*4+2]
+          ovPixels[di+3] = uint8(min(255, int(bgA) + sa))
+    c_free(rgbaPtr)
   # Upload overlay texture
   if ovTexId == 0: glGenTextures(1, addr ovTexId)
   glBindTexture(0x0DE1.GLenum, ovTexId)
@@ -1617,7 +2346,8 @@ proc drawNativeOverlay(winW, winH: int) =
 proc presentAllCanvas2D*(winW, winH: int) =
   ## Upload CPU pixel buffers to GL textures and draw fullscreen quads.
   ## Called each frame after rAF dispatch, before SDL_GL_SwapWindow.
-  if canvas2dStates.len == 0: return
+  ## In WebGL mode, composites the drawing buffer FBO to the window instead.
+  if canvas2dStates.len == 0 and not gWebGLActive: return
   if c2dBlitProg == 0: initCanvas2dBlit()
   # Query GPU name once (GL context must be current)
   if not ovGpuQueried:
@@ -1651,6 +2381,9 @@ proc presentAllCanvas2D*(winW, winH: int) =
   for cs in canvas2dStates:
     if cs.isDisplay and cs.width > dispW:
       dispW = cs.width; dispH = cs.height
+  # In WebGL mode, use the drawing buffer dimensions for letterbox computation
+  if gWebGLActive and glDrawingBufW > 0 and dispW == 0:
+    dispW = glDrawingBufW; dispH = glDrawingBufH
   if dispW > 0 and dispH > 0:
     let scaleX = float32(winW) / float32(dispW)
     let scaleY = float32(winH) / float32(dispH)
@@ -1662,8 +2395,123 @@ proc presentAllCanvas2D*(winW, winH: int) =
   else:
     c2dBlitVpX = 0; c2dBlitVpY = 0
     c2dBlitVpW = winW; c2dBlitVpH = winH
+  # ── WebGL compositing path ──────────────────────────────────────────────
+  # PIXI renders to the drawing buffer FBO.  Blit it to the real default
+  # framebuffer with letterboxing, then draw the debug overlay on top.
+  # CRITICAL: We must save ALL GL state that the WebGL app (PIXI) caches,
+  # because PIXI uses a state cache and won't re-set state it thinks
+  # hasn't changed.  If we modify GL state behind its back, the cache
+  # becomes stale and rendering breaks on the next frame.
+  if gWebGLActive:
+    if glDrawingFBO == 0: return
+    # Check if JS rendering left any GL error before we start compositing
+    let preErr = glGetError()
+    if preErr != 0:
+      stderr.writeLine("[GL] error from JS rendering before compositing: " & $preErr)
+    # ── Save GL state that the WebGL app's cache relies on ──────────
+    var sBlend   = glIsEnabled(0x0BE2.GLenum)           # GL_BLEND
+    var sDepthT  = glIsEnabled(0x0B71.GLenum)           # GL_DEPTH_TEST
+    var sCull    = glIsEnabled(0x0B44.GLenum)           # GL_CULL_FACE
+    var sScissor = glIsEnabled(0x0C11.GLenum)           # GL_SCISSOR_TEST
+    var sStencil = glIsEnabled(0x0B90.GLenum)           # GL_STENCIL_TEST
+    var sBSrcRGB, sBDstRGB, sBSrcA, sBDstA: GLint
+    glGetIntegerv(0x80C9.GLenum, addr sBSrcRGB)         # BLEND_SRC_RGB
+    glGetIntegerv(0x80C8.GLenum, addr sBDstRGB)         # BLEND_DST_RGB
+    glGetIntegerv(0x80CB.GLenum, addr sBSrcA)           # BLEND_SRC_ALPHA
+    glGetIntegerv(0x80CA.GLenum, addr sBDstA)           # BLEND_DST_ALPHA
+    var sBEqRGB, sBEqA: GLint
+    glGetIntegerv(0x8009.GLenum, addr sBEqRGB)          # BLEND_EQUATION_RGB
+    glGetIntegerv(0x883D.GLenum, addr sBEqA)            # BLEND_EQUATION_ALPHA
+    var sProg: GLint
+    glGetIntegerv(0x8B8D.GLenum, addr sProg)            # CURRENT_PROGRAM
+    var sVp: array[4, GLint]
+    glGetIntegerv(0x0BA2.GLenum, addr sVp[0])           # VIEWPORT
+    var sActiveTex: GLint
+    glGetIntegerv(0x84E0.GLenum, addr sActiveTex)       # ACTIVE_TEXTURE
+    # Save the texture bound on unit 0 (we modify unit 0 during compositing)
+    glActiveTexture(0x84C0.GLenum)                       # GL_TEXTURE0
+    var sTex0: GLint
+    glGetIntegerv(0x8069.GLenum, addr sTex0)             # TEXTURE_BINDING_2D on unit 0
+    glActiveTexture(GLenum(sActiveTex))                  # restore active unit for now
+    var sClearColor: array[4, GLfloat]
+    glGetFloatv(0x0C22.GLenum, addr sClearColor[0])     # COLOR_CLEAR_VALUE
+    # ── Compositing: blit drawing buffer FBO → real default framebuffer ──
+    glBindFramebuffer(0x8D40.GLenum, 0)        # bind REAL default framebuffer
+    glViewport(0, 0, GLsizei(winW), GLsizei(winH))
+    glDisable(0x0B71.GLenum)                    # GL_DEPTH_TEST
+    glDisable(0x0B44.GLenum)                    # GL_CULL_FACE
+    glDisable(0x0BE2.GLenum)                    # GL_BLEND (FBO already composited)
+    glDisable(0x0C11.GLenum)                    # GL_SCISSOR_TEST
+    glDisable(0x0B90.GLenum)                    # GL_STENCIL_TEST
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
+    glClear(0x4000.GLbitfield)                  # GL_COLOR_BUFFER_BIT
+    # Letterbox viewport
+    glViewport(GLint(c2dBlitVpX), GLint(winH - c2dBlitVpY - c2dBlitVpH),
+               GLsizei(c2dBlitVpW), GLsizei(c2dBlitVpH))
+    glUseProgram(c2dBlitProg)
+    glUniform1i(c2dBlitTexLoc, 0)
+    glActiveTexture(0x84C0.GLenum)              # GL_TEXTURE0
+    glBindTexture(0x0DE1.GLenum, glDrawingColorTex)
+    glBindVertexArray(c2dBlitVAO_fbo)
+    glDrawArrays(0x0004.GLenum, 0, 6)           # GL_TRIANGLES
+    # FPS overlay (needs blending for semi-transparent background)
+    if c2dShowOverlay:
+      glEnable(0x0BE2.GLenum)                   # GL_BLEND
+      glBlendFunc(0x0302.GLenum, 0x0303.GLenum) # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+      glBindVertexArray(c2dBlitVAO2d)            # overlay is CPU pixels (flipped UV)
+      drawNativeOverlay(winW, winH)
+    # ── Restore ALL saved GL state ──────────────────────────────────
+    # Enable/disable flags
+    if sBlend   != 0: glEnable(0x0BE2.GLenum) else: glDisable(0x0BE2.GLenum)
+    if sDepthT  != 0: glEnable(0x0B71.GLenum) else: glDisable(0x0B71.GLenum)
+    if sCull    != 0: glEnable(0x0B44.GLenum) else: glDisable(0x0B44.GLenum)
+    if sScissor != 0: glEnable(0x0C11.GLenum) else: glDisable(0x0C11.GLenum)
+    if sStencil != 0: glEnable(0x0B90.GLenum) else: glDisable(0x0B90.GLenum)
+    # Blend function and equation
+    glBlendFuncSeparate(GLenum(sBSrcRGB), GLenum(sBDstRGB),
+                        GLenum(sBSrcA), GLenum(sBDstA))
+    glBlendEquationSeparate(GLenum(sBEqRGB), GLenum(sBEqA))
+    # Shader program
+    glUseProgram(GLuint(sProg))
+    # Viewport
+    glViewport(sVp[0], sVp[1], GLsizei(sVp[2]), GLsizei(sVp[3]))
+    # Texture state — restore unit 0 binding, then restore active unit
+    glActiveTexture(0x84C0.GLenum)                       # GL_TEXTURE0
+    glBindTexture(0x0DE1.GLenum, GLuint(sTex0))
+    glActiveTexture(GLenum(sActiveTex))
+    # Clear color
+    glClearColor(sClearColor[0], sClearColor[1], sClearColor[2], sClearColor[3])
+    # Framebuffer — redirect JS's "default" back to our drawing buffer
+    glBindFramebuffer(0x8D40.GLenum, if glJSBoundFBO == 0: glDrawingFBO else: glJSBoundFBO)
+    glBindVertexArray(glDefaultVAO)
+    # ── Sync state cache with restored values ─────────────────────
+    # The compositing path used direct GL calls (not jsGl* functions),
+    # so the shadow cache is stale.  Update it to match restored state
+    # so that JS's next redundant call is correctly skipped.
+    glCapState[0] = int8(sBlend)    # GL_BLEND
+    glCapState[1] = int8(sCull)     # GL_CULL_FACE
+    glCapState[2] = int8(sDepthT)   # GL_DEPTH_TEST
+    glCapState[7] = int8(sScissor)  # GL_SCISSOR_TEST
+    glCapState[8] = int8(sStencil)  # GL_STENCIL_TEST
+    glCacheBlendSrcRGB = GLenum(sBSrcRGB)
+    glCacheBlendDstRGB = GLenum(sBDstRGB)
+    glCacheBlendSrcA   = GLenum(sBSrcA)
+    glCacheBlendDstA   = GLenum(sBDstA)
+    glCacheBlendEqRGB  = GLenum(sBEqRGB)
+    glCacheBlendEqA    = GLenum(sBEqA)
+    glCacheProgram = GLuint(sProg)
+    glCacheVpX = sVp[0]; glCacheVpY = sVp[1]
+    glCacheVpW = GLsizei(sVp[2]); glCacheVpH = GLsizei(sVp[3])
+    glCacheActiveTexUnit = GLenum(sActiveTex)
+    let unit0 = int(uint32(sActiveTex) - 0x84C0'u32)
+    if unit0 == 0:
+      glCacheBoundTex2D[0] = GLuint(sTex0)
+    else:
+      # We restored tex0 on unit 0, then switched active unit back
+      glCacheBoundTex2D[0] = GLuint(sTex0)
+    return
+
   glBindFramebuffer(0x8D40.GLenum, 0)      # GL_FRAMEBUFFER → default
-  # Clear the full window to black first (paints the letterbox bars)
   glViewport(0, 0, GLsizei(winW), GLsizei(winH))
   glDisable(0x0B71.GLenum)                  # GL_DEPTH_TEST
   glDisable(0x0B44.GLenum)                  # GL_CULL_FACE
@@ -1687,6 +2535,10 @@ proc presentAllCanvas2D*(winW, winH: int) =
     if not cs.isDisplay: continue   # only render canvases attached to document.body
     var tex = addr c2dBlitTextures[i]
     glBindTexture(0x0DE1.GLenum, tex.id)    # GL_TEXTURE_2D
+    if not cs.dirty and tex.lastW > 0:
+      # Canvas unchanged since last upload — reuse existing texture
+      glDrawArrays(0x0004.GLenum, 0, 6)     # GL_TRIANGLES
+      continue
     glPixelStorei(0x0CF5.GLenum, 4)         # GL_UNPACK_ALIGNMENT = 4
     glPixelStorei(0x0CF2.GLenum, 0)         # GL_UNPACK_ROW_LENGTH = 0 (use width)
     if tex.lastW != cs.width or tex.lastH != cs.height:
@@ -1704,6 +2556,7 @@ proc presentAllCanvas2D*(winW, winH: int) =
       glTexSubImage2D(0x0DE1.GLenum, 0, 0, 0,
                       GLsizei(cs.width), GLsizei(cs.height),
                       0x1908.GLenum, 0x1401.GLenum, addr cs.pixels[0])
+    cs.dirty = false
     glDrawArrays(0x0004.GLenum, 0, 6)       # GL_TRIANGLES
   # Draw native debug overlay on top when F2 is toggled
   if c2dShowOverlay:

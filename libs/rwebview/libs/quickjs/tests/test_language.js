@@ -1,8 +1,14 @@
+// This test cannot use imports because it needs to run in non-strict mode.
+
 function assert(actual, expected, message) {
     if (arguments.length == 1)
         expected = true;
 
-    if (Object.is(actual, expected))
+    if (actual === expected)
+        return;
+
+    if (typeof actual == 'number' && isNaN(actual)
+    &&  typeof expected == 'number' && isNaN(expected))
         return;
 
     if (actual !== null && expected !== null
@@ -10,29 +16,34 @@ function assert(actual, expected, message) {
     &&  actual.toString() === expected.toString())
         return;
 
+    var msg = message ? " (" + message + ")" : "";
     throw Error("assertion failed: got |" + actual + "|" +
-                ", expected |" + expected + "|" +
-                (message ? " (" + message + ")" : ""));
+                ", expected |" + expected + "|" + msg);
 }
 
-function assert_throws(expected_error, func)
+function assert_throws(expected_error, func, message)
 {
     var err = false;
+    var msg = message ? " (" + message + ")" : "";
     try {
-        func();
+        switch (typeof func) {
+        case 'string':
+            eval(func);
+            break;
+        case 'function':
+            func();
+            break;
+        }
     } catch(e) {
         err = true;
         if (!(e instanceof expected_error)) {
-            throw Error("unexpected exception type");
+            throw Error(`expected ${expected_error.name}, got ${e.name}${msg}`);
         }
     }
     if (!err) {
-        throw Error("expected exception");
+        throw Error(`expected ${expected_error.name}${msg}`);
     }
 }
-
-// load more elaborate version of assert if available
-try { __loadScript("test_assert.js"); } catch(e) {}
 
 /*----------------*/
 
@@ -107,20 +118,20 @@ function test_op1()
 
 function test_cvt()
 {
-    assert((NaN | 0) === 0);
-    assert((Infinity | 0) === 0);
-    assert(((-Infinity) | 0) === 0);
-    assert(("12345" | 0) === 12345);
-    assert(("0x12345" | 0) === 0x12345);
-    assert(((4294967296 * 3 - 4) | 0) === -4);
+    assert((NaN | 0), 0);
+    assert((Infinity | 0), 0);
+    assert(((-Infinity) | 0), 0);
+    assert(("12345" | 0), 12345);
+    assert(("0x12345" | 0), 0x12345);
+    assert(((4294967296 * 3 - 4) | 0), -4);
 
-    assert(("12345" >>> 0) === 12345);
-    assert(("0x12345" >>> 0) === 0x12345);
-    assert((NaN >>> 0) === 0);
-    assert((Infinity >>> 0) === 0);
-    assert(((-Infinity) >>> 0) === 0);
-    assert(((4294967296 * 3 - 4) >>> 0) === (4294967296 - 4));
-    assert((19686109595169230000).toString() === "19686109595169230000");
+    assert(("12345" >>> 0), 12345);
+    assert(("0x12345" >>> 0), 0x12345);
+    assert((NaN >>> 0), 0);
+    assert((Infinity >>> 0), 0);
+    assert(((-Infinity) >>> 0), 0);
+    assert(((4294967296 * 3 - 4) >>> 0), (4294967296 - 4));
+    assert((19686109595169230000).toString(), "19686109595169230000");
 }
 
 function test_eq()
@@ -276,6 +287,13 @@ function test_arguments()
         assert(arguments[1], 3, "arguments");
     }
     f2(1, 3);
+
+    /* mapped arguments with GC must not crash (non-detached var_refs) */
+    function f3(a) {
+        arguments;
+        gc();
+    }
+    f3(0);
 }
 
 function test_class()
@@ -314,43 +332,57 @@ function test_class()
         }
     }
 
-    assert(C.F() === -1);
+    assert(C.F(), -1);
     assert(Object.getOwnPropertyDescriptor(C.prototype, "y").get.name === "get y");
 
     o = new C();
-    assert(o.f() === 1);
-    assert(o.x === 10);
+    assert(o.f(), 1);
+    assert(o.x, 10);
 
-    assert(D.F() === -1);
-    assert(D.G() === -2);
-    assert(D.H() === -1);
+    assert(D.F(), -1);
+    assert(D.G(), -2);
+    assert(D.H(), -1);
 
     o = new D();
-    assert(o.f() === 1);
-    assert(o.g() === 2);
-    assert(o.x === 10);
-    assert(o.z === 20);
-    assert(o.h() === 1);
+    assert(o.f(), 1);
+    assert(o.g(), 2);
+    assert(o.x, 10);
+    assert(o.z, 20);
+    assert(o.h(), 1);
 
     /* test class name scope */
     var E1 = class E { static F() { return E; } };
-    assert(E1 === E1.F());
+    assert(E1, E1.F());
 
     class S {
         static x = 42;
         static y = S.x;
         static z = this.x;
     }
-    assert(S.x === 42);
-    assert(S.y === 42);
-    assert(S.z === 42);
-
+    assert(S.x, 42);
+    assert(S.y, 42);
+    assert(S.z, 42);
+    
     class P {
+        get;
+        set;
+        async;
         get = () => "123";
+        set = () => "456";
+        async = () => "789";
         static() { return 42; }
     }
-    assert(new P().get() === "123");
-    assert(new P().static() === 42);
+    assert(new P().get(), "123");
+    assert(new P().set(), "456");
+    assert(new P().async(), "789");
+    assert(new P().static(), 42);
+
+    /* test that division after private field in parens is not parsed as regex */
+    class Q {
+        #x = 10;
+        f() { return (this.#x / 2); }
+    }
+    assert(new Q().f(), 5);
 };
 
 function test_template()
@@ -377,10 +409,10 @@ function test_template_skip()
 
 function test_object_literal()
 {
-    var x = 0, get = 1, set = 2, async = 3;
+    var x = 0, get = 1, set = 2; async = 3;
     a = { get: 2, set: 3, async: 4, get a(){ return this.get} };
     assert(JSON.stringify(a), '{"get":2,"set":3,"async":4,"a":2}');
-    assert(a.a === 2);
+    assert(a.a, 2);
 
     a = { x, get, set, async };
     assert(JSON.stringify(a), '{"x":0,"get":1,"set":2,"async":3}');
@@ -390,10 +422,10 @@ function test_regexp_skip()
 {
     var a, b;
     [a, b = /abc\(/] = [1];
-    assert(a === 1);
+    assert(a, 1);
 
     [a, b =/abc\(/] = [2];
-    assert(a === 2);
+    assert(a, 2);
 }
 
 function test_labels()
@@ -405,24 +437,6 @@ function test_labels()
         x: { break x; }
     with ({}) x: { break x; };
     while (0) x: { break x; };
-}
-
-function test_labels2()
-{
-    while (1) label: break
-    var i = 0
-    while (i < 3) label: {
-        if (i > 0)
-            break
-        i++
-    }
-    assert(i, 1)
-    for (;;) label: break
-    for (i = 0; i < 3; i++) label: {
-        if (i > 0)
-            break
-    }
-    assert(i, 1)
 }
 
 function test_destructuring()
@@ -455,12 +469,10 @@ function test_argument_scope()
     var f;
     var c = "global";
 
-    (function() {
-        "use strict";
-        // XXX: node only throws in strict mode
-        f = function(a = eval("var arguments")) {};
+    f = function(a = eval("var arguments")) {};
+    // for some reason v8 does not throw an exception here
+    if (typeof require === 'undefined')
         assert_throws(SyntaxError, f);
-    })();
 
     f = function(a = eval("1"), b = arguments[0]) { return b; };
     assert(f(12), 12);
@@ -575,35 +587,105 @@ function test_function_expr_name()
     assert_throws(TypeError, f);
 }
 
-function test_parse_semicolon()
-{
-    /* 'yield' or 'await' may not be considered as a token if the
-       previous ';' is missing */
-    function *f()
-    {
-        function func() {
-        }
-        yield 1;
-        var h = x => x + 1
-        yield 2;
-    }
-    async function g()
-    {
-        function func() {
-        }
-        await 1;
-        var h = x => x + 1
-        await 2;
-    }
+function test_expr(expr, err) {
+    if (err)
+        assert_throws(err, expr, `for ${expr}`);
+    else
+        assert(1, eval(expr), `for ${expr}`);
 }
 
-function test_parse_arrow_function()
+function test_name(name, err)
 {
-    assert(typeof eval("() => {}\n() => {}"), "function");
-    assert(eval("() => {}\n+1"), 1);
-    assert(typeof eval("x => {}\n() => {}"), "function");
-    assert(typeof eval("async () => {}\n() => {}"), "function");
-    assert(typeof eval("async x => {}\n() => {}"), "function");
+    test_expr(`(function() { return typeof ${name} ? 1 : 1; })()`);
+    test_expr(`(function() { var ${name}; ${name} = 1; return ${name}; })()`);
+    test_expr(`(function() { let ${name}; ${name} = 1; return ${name}; })()`, name == 'let' ? SyntaxError : undefined);
+    test_expr(`(function() { const ${name} = 1; return ${name}; })()`, name == 'let' ? SyntaxError : undefined);
+    test_expr(`(function(${name}) { ${name} = 1; return ${name}; })()`);
+    test_expr(`(function({${name}}) { ${name} = 1; return ${name}; })({})`);
+    test_expr(`(function ${name}() { return ${name} ? 1 : 0; })()`);
+    test_expr(`"use strict"; (function() { return typeof ${name} ? 1 : 1; })()`, err);
+    test_expr(`"use strict"; (function() { if (0) ${name} = 1; return 1; })()`, err);
+    test_expr(`"use strict"; (function() { var x; if (0) x = ${name}; return 1; })()`, err);
+    test_expr(`"use strict"; (function() { var ${name}; return 1; })()`, err);
+    test_expr(`"use strict"; (function() { let ${name}; return 1; })()`, err);
+    test_expr(`"use strict"; (function() { const ${name} = 1; return 1; })()`, err);
+    test_expr(`"use strict"; (function() { var ${name}; ${name} = 1; return 1; })()`, err);
+    test_expr(`"use strict"; (function() { var ${name}; ${name} = 1; return ${name}; })()`, err);
+    test_expr(`"use strict"; (function(${name}) { return 1; })()`, err);
+    test_expr(`"use strict"; (function({${name}}) { return 1; })({})`, err);
+    test_expr(`"use strict"; (function ${name}() { return 1; })()`, err);
+    test_expr(`(function() { "use strict"; return typeof ${name} ? 1 : 1; })()`, err);
+    test_expr(`(function() { "use strict"; if (0) ${name} = 1; return 1; })()`, err);
+    test_expr(`(function() { "use strict"; var x; if (0) x = ${name}; return 1; })()`, err);
+    test_expr(`(function() { "use strict"; var ${name}; return 1; })()`, err);
+    test_expr(`(function() { "use strict"; let ${name}; return 1; })()`, err);
+    test_expr(`(function() { "use strict"; const ${name} = 1; return 1; })()`, err);
+    test_expr(`(function() { "use strict"; var ${name}; ${name} = 1; return 1; })()`, err);
+    test_expr(`(function() { "use strict"; var ${name}; ${name} = 1; return ${name}; })()`, err);
+    test_expr(`(function(${name}) { "use strict"; return 1; })()`, err);
+    test_expr(`(function({${name}}) { "use strict"; return 1; })({})`, SyntaxError);
+    test_expr(`(function ${name}() { "use strict"; return 1; })()`, err);
+}
+
+function test_reserved_names()
+{
+    test_name('await');
+    test_name('yield', SyntaxError);
+    test_name('implements', SyntaxError);
+    test_name('interface', SyntaxError);
+    test_name('let', SyntaxError);
+    test_name('package', SyntaxError);
+    test_name('private', SyntaxError);
+    test_name('protected', SyntaxError);
+    test_name('public', SyntaxError);
+    test_name('static', SyntaxError);
+}
+
+function test_number_literals()
+{
+    assert(0.1.a, undefined);
+    assert(0x1.a, undefined);
+    assert(0b1.a, undefined);
+    assert(01.a, undefined);
+    assert(0o1.a, undefined);
+    test_expr('0.a', SyntaxError);
+    assert(parseInt("0_1"), 0);
+    assert(parseInt("1_0"), 1);
+    assert(parseInt("0_1", 8), 0);
+    assert(parseInt("1_0", 8), 1);
+    assert(parseFloat("0_1"), 0);
+    assert(parseFloat("1_0"), 1);
+    assert(1_0, 10);
+    assert(parseInt("Infinity"), NaN);
+    assert(parseFloat("Infinity"), Infinity);
+    assert(parseFloat("Infinity1"), Infinity);
+    assert(parseFloat("Infinity_"), Infinity);
+    assert(parseFloat("Infinity."), Infinity);
+    test_expr('0_0', SyntaxError);
+    test_expr('00_0', SyntaxError);
+    test_expr('01_0', SyntaxError);
+    test_expr('08_0', SyntaxError);
+    test_expr('09_0', SyntaxError);
+}
+
+function test_syntax()
+{
+    assert_throws(SyntaxError, "do");
+    assert_throws(SyntaxError, "do;");
+    assert_throws(SyntaxError, "do{}");
+    assert_throws(SyntaxError, "if");
+    assert_throws(SyntaxError, "if\n");
+    assert_throws(SyntaxError, "if 1");
+    assert_throws(SyntaxError, "if \0");
+    assert_throws(SyntaxError, "if ;");
+    assert_throws(SyntaxError, "if 'abc'");
+    assert_throws(SyntaxError, "if `abc`");
+    assert_throws(SyntaxError, "if /abc/");
+    assert_throws(SyntaxError, "if abc");
+    assert_throws(SyntaxError, "if abc\u0064");
+    assert_throws(SyntaxError, "if abc\\u0064");
+    assert_throws(SyntaxError, "if \u0123");
+    assert_throws(SyntaxError, "if \\u0123");
 }
 
 /* optional chaining tests not present in test262 */
@@ -631,37 +713,26 @@ function test_optional_chaining()
     assert((a?.["b"])().c, 42);
 }
 
-function test_unicode_ident()
+function test_parse_semicolon()
 {
-    var Ãµ = 3;
-    assert(typeof õ, "undefined");
-}
-
-/* check global variable optimization */
-function test_global_var_opt()
-{
-    var v2;
-    (1, eval)('var gvar1'); /* create configurable global variables */
-
-    gvar1 = 1;
-    Object.defineProperty(globalThis, "gvar1", { writable: false });
-    gvar1 = 2;
-    assert(gvar1, 1);
-
-    Object.defineProperty(globalThis, "gvar1", { get: function() { return "hello" },
-                                                 set: function(v) { v2 = v; } });
-    assert(gvar1, "hello");
-    gvar1 = 3;
-    assert(v2, 3);
-
-    Object.defineProperty(globalThis, "gvar1", { value: 4, writable: true, configurable: true });
-    assert(gvar1, 4);
-    gvar1 = 6;
-    
-    delete gvar1;
-    assert_throws(ReferenceError, function() { return gvar1 });
-    gvar1 = 5;
-    assert(gvar1, 5);
+    /* 'yield' or 'await' may not be considered as a token if the
+       previous ';' is missing */
+    function *f()
+    {
+        function func() {
+        }
+        yield 1;
+        var h = x => x + 1
+        yield 2;
+    }
+    async function g()
+    {
+        function func() {
+        }
+        await 1;
+        var h = x => x + 1
+        await 2;
+    }
 }
 
 test_op1();
@@ -669,8 +740,8 @@ test_cvt();
 test_eq();
 test_inc_dec();
 test_op2();
-test_constructor();
 test_delete();
+test_constructor();
 test_prototype();
 test_arguments();
 test_class();
@@ -679,14 +750,13 @@ test_template_skip();
 test_object_literal();
 test_regexp_skip();
 test_labels();
-test_labels2();
 test_destructuring();
 test_spread();
 test_function_length();
 test_argument_scope();
 test_function_expr_name();
-test_parse_semicolon();
+test_reserved_names();
+test_number_literals();
+test_syntax();
 test_optional_chaining();
-test_parse_arrow_function();
-test_unicode_ident();
-test_global_var_opt();
+test_parse_semicolon();

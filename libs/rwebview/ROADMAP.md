@@ -19,8 +19,9 @@ This document is the phased development plan for building **rwebview** — a min
 11. ✅ [Phase 7 — Web Audio API](#phase-7--web-audio-api)
 12. ✅ [Phase 8 — Storage (localStorage)](#phase-8--storage-localstorage)
 13. ✅ [Phase 9 — Rover Integration](#phase-9--rover-integration)
-14. [Phase 10 — RPG Maker MV Testing](#phase-10--rpg-maker-mv-testing)
-15. [API Compatibility Checklist](#15-api-compatibility-checklist)
+14. ✅ [Phase 10 — RPG Maker MV Testing](#phase-10--rpg-maker-mv-testing)
+15. ✅ [Phase 11 — Unified Font Stack (Fonstash)](#phase-11--unified-font-stack-fonstash-for-canvas2d--ui)
+16. [API Compatibility Checklist](#15-api-compatibility-checklist)
 
 ---
 
@@ -141,7 +142,7 @@ libs/rwebview/
 ├── rwebview.nim               # Orchestrator — includes all modules below
 ├── rwebview_ffi_sdl3.nim      # SDL3 core FFI bindings
 ├── rwebview_ffi_sdl3_media.nim# SDL3 media FFI (image, ttf, sound, audio)
-├── rwebview_ffi_quickjs.nim   # QuickJS FFI bindings
+├── rgss_quickjs_ffi.nim   # QuickJS FFI bindings
 ├── rwebview_html.nim          # Lexbor HTML parser + script extraction
 ├── rwebview_dom.nim           # Fake DOM, timers, rAF, event dispatch
 ├── rwebview_canvas2d.nim      # Canvas 2D CPU pixel ops + text rendering
@@ -151,7 +152,7 @@ libs/rwebview/
 ├── testmedia.html             # RPG Maker title screen demo
 ├── build.bat                  # Phase 0 build runner
 ├── c_src/
-│   └── rwebview_qjs_wrap.c   # Thin C wrappers for QuickJS/Lexbor
+│   ├── rwebview_rgss_wrap.c  # Thin C wrappers for RGSS inline functions
 ├── bin/                       # Built .dll + import .dll.a files go here
 └── libs/
     ├── SDL/                   # SDL3 v3.5 source (already present)
@@ -682,7 +683,7 @@ webview_return  →  evals __rw_resolve(id, 0, resultJson)
 
 ---
 
-## Phase 10 — RPG Maker MV Testing (IN PROGRESS)
+## Phase 10 — RPG Maker MV Testing ✅ COMPLETE
 
 **Goal:** The sample game in `rpg_maker/` loads and is interactive end-to-end.
 
@@ -696,7 +697,7 @@ webview_return  →  evals __rw_resolve(id, 0, resultJson)
 - [ ] **T6** — Battle works: encounter screen, sprites, and attack animations render
 - [x] **T7** — Save works: `localStorage.setItem` writes data; data survives restart
 - [x] **T8** — BGM plays: background music starts on title screen
-- [x] **T9** — SE plays: menu cursor sound effects play (with known pitch issues)
+- [x] **T9** — SE plays: menu cursor sound effects play at correct pitch
 - [ ] **T10** — No console errors: `console.error` / `console.warn` output from game scripts is zero
 
 ### Bugs Found & Fixed During Testing
@@ -713,13 +714,11 @@ webview_return  →  evals __rw_resolve(id, 0, resultJson)
 | PannerNode crash | Missing PannerNode stub | Added passthrough stub with connect/disconnect |
 | Alpha blending artifacts | Incorrect alpha composition formula | Fixed to standard Porter-Duff source-over |
 | Audio OGG detection | File extension detection failed | Improved format sniffing logic |
-
-### Remaining Open Issues
-
-See `ISSUES.md` for full details:
-- Rain/snow particle rendering (too large)
-- SE pitch shift on some sound effects
-- Mouse coordinate offset (few pixels toward bottom-right)
+| Rain/snow particles too large | `drawImage` AABB used as rendered dimensions for rotated sprites | Added affine-sampled drawImage path with inverse CTM mapping |
+| Mouse coordinate offset | `canvas.offsetLeft/Top` not synced with letterbox viewport origin | Added `style.margin/width/height` interceptors with `_recalcOffset()` |
+| Windowskin too transparent | Canvas2D compositing path corrupted PIXI's cached blend state before `gWebGLActive` was set | Set `gWebGLActive = true` in `initDrawingBuffer()` after FBO creation, eliminating the canvas2D fallback path |
+| SE pitch shift | `jsAudioDecode` stored `sample.actual.freq` (raw codec rate) but `sample.buffer` contains data at `desired.freq` (44100 Hz) after SDL_sound conversion | Use desired spec values (`AUDIO_SAMPLE_RATE`, `AUDIO_CHANNELS`) for deinterleaving and mixing |
+| Viewport clipped at non-default window size | FBO created at window size, not game canvas size; letterbox used FBO dimensions | Added `__rw_resizeDrawingBuffer` native function; canvas width/height setters resize FBO to match game resolution |
 
 ### Debugging Approach
 
@@ -730,38 +729,286 @@ See `ISSUES.md` for full details:
 
 ---
 
+## Phase 11 — Unified Font Stack (Fonstash for Canvas2D + UI) ✅ COMPLETE
+
+**Goal:** Eliminate dual FreeType2 backends; use fonstash as the **unified font rendering engine** for both Canvas 2D text and NanoVG UI text.
+
+### Problem Statement
+
+**Current Architecture (Fragmented):**
+```
+Canvas2D fillText()    →  SDL3_ttf.dll  →  FreeType2 instance #1
+NanoVG nvgText()       →  fonstash      →  FreeType2 instance #2
+                                             ^^^ MEMORY DUPLICATION
+                                                 MAINTENANCE BURDEN
+```
+
+**Issues:**
+- Two separate FreeType2 runtime instances (memory overhead)
+- Two independent font managers (complexity, potential bugs)
+- SDL_ttf API for Canvas2D (`TTF_RenderText_Blended`, `TTF_GetStringSize`)
+- fonstash API for UI (glyph iteration, atlas management)
+- Synchronization challenges if fonts need to be shared or preloaded
+- Both libraries call FreeType2 `FT_Load_Glyph` independently (cache miss overhead)
+
+**Why this matters:**
+- **Memory:** Each FreeType2 instance allocates face caches, glyph slot buffers, and hinting structures. Duplication wastes ~500 KB for a game using 2-3 fonts.
+- **Performance:** No shared glyph cache — same glyph may be rasterized twice at different sizes.
+- **Maintainability:** Canvas2D refactors must coordinate with NanoVG/UI changes to avoid font inconsistencies.
+
+### Solution: Unified Fonstash Backend
+
+**New Architecture (Unified):**
+```
+Shared Layer: c_src/rwebview_fonstash_core.c
+    ▲
+    │
+    ├─ Canvas2D fillText()   → fonsRenderText()
+    ├─ Canvas2D measureText() → fonsTextBounds()
+    └─ NanoVG nvgText()      → fonsTextIter() + nvgRenderQuad()
+    
+Single FreeType2 instance
+Unified glyph atlas
+Unified font cache
+```
+
+**Benefits:**
+- ✅ Single FreeType2 instance (unified caching, better performance)
+- ✅ Single glyph atlas (reuse glyph positions across Canvas2D + UI)
+- ✅ Unified font loading (consistent behavior, preload once)
+- ✅ Simpler maintenance (one rendering pipeline, not two)
+- ✅ Smaller binary (potential DLL savings if fonstash replaces SDL_ttf for Canvas2D role)
+
+### SDL_ttf Features Canvas2D Currently Uses
+
+Canvas2D (`rwebview_canvas2d.nim`) currently calls:
+
+| SDL3_ttf Function | Purpose | Fonstash Equivalent |
+|---|---|---|
+| `TTF_Init()` | Initialize TTF subsystem | `fonsCreateInternal()` in core (single call, not per-font) |
+| `TTF_Quit()` | Cleanup TTF subsystem | `fonsDeleteInternal()` in core (shutdown) |
+| `TTF_OpenFont(path, size)` | Load font file at given size, return handle | `fonsAddFont(fontCtx, name, path, 0)` → font ID |
+| `TTF_CloseFont(font)` | Free font handle | *(implicit; fonstash manages lifetime internally)* |
+| `TTF_RenderText_Blended(font, text, fg_color)` | Render glyph string to RGBA SDL_Surface | `fonsTextIterInit()` + `fonsTextIterNext()` → iterate quads, then custom CPU rasterizer to Canvas2D pixel buffer |
+| `TTF_GetStringSize(font, text, &w, &h)` | Measure text dimensions in pixels | `fonsTextBounds(fontCtx, 0, 0, text, NULL, bounds)` → bounds[2]-bounds[0] = width, bounds[3]-bounds[1] = height |
+| `TTF_SetFontSize()` | Dynamic font size (per-render) | `fonsSetSize(fontCtx, size)` (state, not per-font) |
+
+### Fonstash API Contract for Canvas2D
+
+For Canvas2D to adopt fonstash, **rwebview_fonstash_core.c** must export these functions:
+
+```c
+// Initialization (called once at startup)
+FONScontext* rw_fons_create(int atlasWidth, int atlasHeight, int flags);
+void rw_fons_destroy(FONScontext* ctx);
+
+// Font management (called during canvas init or @font-face parsing)
+int rw_fons_add_font(FONScontext* ctx, const char* name, const char* path);
+int rw_fons_get_font(FONScontext* ctx, const char* name);
+
+// Rendering state (Canvas2D must set these before each text op)
+void rw_fons_set_size(FONScontext* ctx, float size);
+void rw_fons_set_font(FONScontext* ctx, int fontId);
+void rw_fons_set_align(FONScontext* ctx, int align);  // FONS_ALIGN_LEFT|CENTER|RIGHT | TOP|BASELINE|BOTTOM
+void rw_fons_set_color(FONScontext* ctx, unsigned int rgba);  // 0xRRGGBBAA
+
+// Text metrics (for Canvas2D measureText)
+float rw_fons_text_bounds(FONScontext* ctx, float x, float y, const char* string, const char* end, float* bounds);
+    // bounds[4] = {xmin, ymin, xmax, ymax}
+    // width = bounds[2] - bounds[0]
+    // height = bounds[3] - bounds[1]
+
+// Glyph iteration (for Canvas2D fillText with custom CPU pixel rendering)
+int rw_fons_text_iter_init(FONScontext* ctx, FONStextIter* iter, float x, float y, const char* str, const char* end);
+int rw_fons_text_iter_next(FONScontext* ctx, FONStextIter* iter, FONSquad* quad);
+    // quad.x0, quad.y0, quad.x1, quad.y1 = glyph screen coords
+    // quad.s0, quad.t0, quad.s1, quad.t1 = atlas UV coords
+    // Caller blits glyph from atlas texture to Canvas2D pixel buffer using UV coords
+
+// Atlas access (for Canvas2D to fetch glyph pixels when needed)
+const unsigned char* rw_fons_get_atlas_data(FONScontext* ctx, int* width, int* height);
+    // Returns RGBA pixel buffer of current glyph atlas
+    // Canvas2D can read from this to implement fillText alpha blending
+```
+
+### Canvas2D Refactoring Plan
+
+| Module | Change | Effort | Risk |
+|---|---|---|---|
+| `getOrLoadFont()` | Replace `TTF_OpenFont()` → `fonsGetFont()` | Low (1 call site) | Low (same return type handling) |
+| `fillText()` | Replace `TTF_RenderText_Blended()` → iterate `fonsTextIterNext()` quads, blit from atlas to Canvas2D buffer | Medium (custom glyph fetch logic) | Medium (atlas UV mapping) |
+| `measureText()` | Replace `TTF_GetStringSize()` → `fonsTextBounds()` | Low (1 call, similar API) | Low (bounds array indexing) |
+| `ttfFontCache` | Unified with fonstash internal cache | Low (remove table) | Low (lookup via `fonsGetFont` ID) |
+| `ttfInitialized` | Removed (fonstash context lifetime managed by core) | Low (simplify startup) | Low |
+
+**Total effort:** ~200-250 lines refactored, ~3-5 days including testing.
+
+### UI (rwebview_ui.nim) — No Changes
+
+NanoVG's fonstash integration (already proven working) requires zero changes. The shared fonstash context created in `rwebview_fonstash_core.c` will be transparently used by both:
+1. Canvas2D (via `rw_fons_*` wrappers)
+2. NanoVG (via direct fonstash API, as today)
+
+### Implementation Checklist
+
+- [ ] Create `c_src/rwebview_fonstash_core.c`
+  - [ ] Wrap `fonsCreateInternal()` with NanoVG rendering callbacks
+  - [ ] Export `rw_fons_*` functions listed above
+  - [ ] Manage singleton FONScontext lifetime (init at startup, cleanup at exit)
+  - [ ] Add error logging for atlas full / scratch buffer full
+
+- [ ] Create Nim bindings in `rwebview_canvas2d.nim`
+  - [ ] Import `rw_fons_*` C functions via `importc`
+  - [ ] Refactor `getOrLoadFont()` to call `rw_fons_add_font()` and cache font IDs
+  - [ ] Refactor `fillText()` to use `rw_fons_text_iter_init()` + `rw_fons_text_iter_next()`
+  - [ ] Implement custom glyph blitting from atlas UV coords to Canvas2D pixel buffer (respecting alpha, composition ops, transforms)
+  - [ ] Refactor `measureText()` to use `rw_fons_text_bounds()`
+
+- [ ] Test integration
+  - [ ] Verify RPG Maker MV text rendering unchanged (visual regression test)
+  - [ ] Verify rwebview_ui.nim NanoVG text unchanged
+  - [ ] Memory profiler: confirm single FreeType2 instance
+  - [ ] Performance profiler: measure glyph cache hit rate improvement
+
+- [ ] Update AI-README.md §7.4
+  - [ ] Change "nanovg.c (font rendering): stb_truetype" → "**shared fonstash layer**"
+  - [ ] Remove stb_truetype from dependency table
+  - [ ] Document unified architecture
+
+### Why NOT Use SDL_ttf Adapter Instead?
+
+This was initially considered but rejected:
+
+**Adapter approach (avoid):**
+```
+Canvas2D fillText() →  SDL_ttf adapter  →  fonstash  →  FreeType2
+                         (extra layer,     (still 1     (shared)
+                          overhead)         instance)
+```
+
+**Problems with adapter:**
+- Adds wrapper function call overhead per glyph (extra stack frame, indirection)
+- No architectural benefit — two layers instead of one, solving same problem
+- Increases maintenance burden (three function-call boundaries: Canvas2D → adapter → fonstash)
+- NanoVG still uses fonstash directly; adapter doesn't unify anything
+
+**Direct refactor (chosen):**
+```
+Canvas2D fillText() →  fonstash API directly  →  FreeType2 (shared)
+NanoVG nvgText()   →  fonstash API directly  →
+```
+
+No wrappers, same code path, simpler, faster, clearer intent.
+
+---
+
 ## 15. API Compatibility Checklist
 
 Cross-reference this with `AI-README.md §5` to track coverage.
+All specs are anchored to versions **ratified or widely adopted by 2020** (living standards
+frozen at that snapshot). Newer additions (e.g. CSS Container Queries, WebGPU) are out of scope
+for this checklist.
 
-| Feature Group | Phase | Status |
-|---|---|---|
-| `window.*` timers, rAF, events | 3 | ✅ Done (setTimeout, setInterval, rAF, onload, resize, keydown/keyup/mousedown/mouseup/mousemove/wheel/click) |
-| `document.*` DOM | 3 | ✅ Done (getElementById, createElement, querySelector, body, head, documentElement, addEventListener, createTextNode) |
-| `navigator.*` stubs | 3 | ✅ Done (userAgent, platform, language, maxTouchPoints, getGamepads) |
-| `console.*` | 1 | ✅ Done (log/warn/error → stderr via QuickJS magic callbacks) |
-| `HTMLCanvasElement` | 3+5 | ✅ Done (getContext '2d'/'webgl', width/height, toDataURL stub, offsetLeft/Top) |
-| `HTMLImageElement` | 6 | ✅ Done (src=url → SDL_image decode → __pixelData + onload/onerror) |
-| `HTMLAudioElement` | 7 | ⬜ Stub only (Web Audio API is the primary audio path) |
-| `HTMLVideoElement` | — | ⬜ Stub only (low priority) |
-| `HTMLInputElement` | — | ⬜ Stub only (low priority) |
-| Canvas 2D API | 5+10 | ✅ Done (clearRect, fillRect, drawImage, fillText, strokeText, measureText, save/restore, transforms, globalAlpha, globalCompositeOperation ×7, getImageData/putImageData, createLinearGradient, createPattern, arc+fill) |
-| WebGL1 API | 4 | ✅ Done (~70 functions, 200+ constants, extensions, GLSL ES→Core preprocessing) |
-| XMLHttpRequest | 6 | ✅ Done (open, send, responseType: text/arraybuffer/json, status, onload/onerror) |
-| Fetch API | 6 | ✅ Done (fetch → Response with text/json/arrayBuffer/blob methods) |
-| Web Audio API | 7 | ✅ Done (AudioContext, decodeAudioData, BufferSourceNode, GainNode, PannerNode stub, software mixer) |
-| localStorage | 8 | ✅ Done (setItem/getItem/removeItem/clear/length/key, atomic JSON file write) |
-| KeyboardEvent, MouseEvent | 3+10 | ✅ Done (keydown/keyup with key/code/keyCode, mousedown/mouseup/mousemove/wheel/click with clientX/clientY/pageX/pageY/button) |
-| TouchEvent | — | ⬜ Not started |
-| Fullscreen API | 10 | ⬜ Stubs (fullscreenElement, exitFullscreen, requestFullscreen — all no-ops) |
-| Typed Arrays (BufferView) | 4 | ✅ (QuickJS built-in + jsGetBufferData helper for GL calls) |
-| Promise | — | ✅ (QuickJS built-in) |
-| JSON, Math, Date, Array, String | — | ✅ (QuickJS built-in) |
-| ImageData | 5 | ✅ Done (getImageData/putImageData) |
-| URL / URLSearchParams | — | ✅ (QuickJS built-in) |
-| btoa / atob | — | ⬜ Not verified |
+### 15.1 — Core Browser APIs
 
-### Performance Fixes Applied
+| Feature Group | W3C/WHATWG Spec | Phase | Status |
+|---|---|---|---|
+| `window.*` timers, rAF, events | HTML LS | 3 | ✅ Done (setTimeout, setInterval, rAF, onload, resize, keydown/keyup/mousedown/mouseup/mousemove/wheel/click) |
+| `document.*` DOM | DOM LS | 3 | ✅ Done (getElementById, createElement, querySelector, body, head, documentElement, addEventListener, createTextNode) |
+| `navigator.*` stubs | HTML LS | 3 | ✅ Done (userAgent, platform, language, maxTouchPoints, getGamepads stub) |
+| `console.*` | Console Standard | 1 | ✅ Done (log/warn/error → stdout; info/debug → stdout) |
+| `console.time/timeEnd/assert/trace` | Console Standard | — | ⬜ Not verified (mentioned in AI-README §5.1 but not in dom_preamble.js) |
+| `HTMLCanvasElement` | HTML LS | 3+5 | ✅ Done (getContext '2d'/'webgl', width/height, toDataURL stub, offsetLeft/Top) |
+| `HTMLImageElement` | HTML LS | 6 | ✅ Done (src=url → SDL_image decode → `__pixelData` + onload/onerror, naturalWidth/Height) |
+| `HTMLAudioElement` | HTML LS | 7 | ⚠️ Stub only (`new Audio()` returns a no-op; Web Audio API is the primary path) |
+| `HTMLVideoElement` | HTML LS | — | ⬜ Stub only — `play()`/`pause()` return resolved Promise, no decode |
+| `HTMLInputElement` | HTML LS | — | ⬜ Stub only (value, type, onchange, onkeydown) |
+| `HTMLMediaElement.canPlayType` | HTML LS | 7 | ✅ Done (OGG→"probably", M4A→"") |
+| Canvas 2D API | HTML LS §4.12.5 | 5+10 | ✅ Done (clearRect, fillRect, drawImage, fillText, strokeText, measureText, save/restore, transforms, globalAlpha, globalCompositeOperation ×7, getImageData/putImageData, createLinearGradient, createPattern, arc+fill) |
+| Canvas 2D path rasterizer | HTML LS §4.12.5 | — | ⬜ Path ops (beginPath/moveTo/lineTo/bezierCurveTo/quadraticCurveTo/arc) are stubs — `stroke()` and `fill()` do nothing. Needs a pure-C Bézier/fill library (e.g. **stb_truetype** scanline fill, or **nanosvg** rasterizer). |
+| Canvas 2D: `clip()` | HTML LS | — | ⬜ Not implemented |
+| Canvas 2D: `createImageBitmap` | HTML LS | — | ⬜ Not implemented (`createImageBitmap` → would reuse SDL_image decode) |
+| Canvas 2D: `OffscreenCanvas` | HTML LS (2018) | — | ⬜ Not implemented |
+| WebGL1 API | Khronos WebGL 1.0 | 4 | ✅ Done (~70 functions, 200+ constants, extensions, GLSL ES→Core preprocessing) |
+| WebGL2 API | Khronos WebGL 2.0 (2017) | — | ⬜ Not implemented — `getContext('webgl2')` returns `null` intentionally; would require OpenGL 4.x proc loading and new binding surface |
+| XMLHttpRequest | XHR LS | 6 | ✅ Done (open, send, responseType: text/arraybuffer/json, status, onload/onerror) |
+| Fetch API | Fetch LS | 6 | ✅ Done (fetch → Response with text/json/arrayBuffer/blob methods) |
+| Web Audio API | W3C WAA CR (2018) | 7 | ✅ Done (AudioContext, decodeAudioData, BufferSourceNode, GainNode, PannerNode stub, software mixer) |
+| Web Audio: AnalyserNode | W3C WAA CR | — | ⬜ Not implemented (used by some visualisers; stub needed) |
+| Web Audio: AudioWorklet | W3C WAA CR (2018) | — | ⬜ Not implemented (advanced; not required by RPG Maker) |
+| localStorage | Web Storage LS | 8 | ✅ Done (setItem/getItem/removeItem/clear/length/key, atomic JSON file write) |
+| sessionStorage | Web Storage LS | — | ⬜ Not implemented — in-memory table only, discarded on restart; easy to add as a `table` that is never persisted to disk |
+| IndexedDB | W3C IDB 2.0 (2018) | — | ⬜ Not implemented. Required by PGlite and some Unity apps. Potential libraries: **idbfs** is JS-only; native side would need a key-value store such as **LMDB** (C, MDB backend) or **SQLite** (C). |
+| KeyboardEvent, MouseEvent | UI Events W3C (2019) | 3+10 | ✅ Done (keydown/keyup with key/code/keyCode/which, mousedown/mouseup/mousemove/wheel/click with clientX/clientY/pageX/pageY/button/buttons/altKey/ctrlKey/shiftKey) |
+| WheelEvent | UI Events W3C (2019) | 10 | ✅ Done (dispatched from `SDL_EVENT_MOUSE_WHEEL`) |
+| TouchEvent | Touch Events W3C (2013) | — | ⬜ Not started. SDL3 finger events (`SDL_EVENT_FINGER_DOWN/UP/MOTION`) are available; need to map to `touches` / `changedTouches` arrays and dispatch `touchstart`/`touchend`/`touchmove`/`touchcancel` |
+| Pointer Events | PE Level 2 W3C (2019) | — | ⬜ Stub only — `PointerEvent` constructor exists in `dom_preamble.js` but no SDL events are translated to `pointerdown`/`pointermove`/`pointerup`/`pointercancel`. SDL3 has no separate pointer-ID concept; mapping mouse→pointerId=1 is sufficient for most games |
+| FocusEvent | UI Events W3C (2019) | 3 | ✅ Done (`SDL_EVENT_WINDOW_FOCUS_GAINED/LOST` → `focus`/`blur` on window) |
+| CustomEvent | DOM LS | 10 | ✅ Done (`CustomEvent` constructor in `dom_preamble.js`) |
+| Fullscreen API | Fullscreen LS (2018) | 10 | ⬜ Stubs only — `requestFullscreen()`, `exitFullscreen()`, `fullscreenElement`, `fullscreenchange` event not wired to SDL3 `SDL_SetWindowFullscreen` |
+| Page Visibility API | W3C PR (2013) | 3 | ⚠️ Partial — `document.visibilityState='visible'` and `document.hidden=false` are hard-coded; not updated on SDL window focus/blur events |
+| Screen Orientation API | W3C CR (2016) | 3 | ⚠️ Partial — `screen.orientation.type`/`angle` present; `lock()` is a no-op Promise stub |
+| Pointer Lock API | W3C REC (2016) | — | ⬜ Not implemented. `element.requestPointerLock()` / `document.exitPointerLock()` absent. SDL3 provides `SDL_SetRelativeMouseMode()` — straightforward to wire up |
+| History API | WHATWG HTML LS | 3 | ⚠️ Stub — `pushState`/`replaceState` are no-ops; `popstate` event never fired |
+| MutationObserver | DOM LS | 3 | ⚠️ Stub — constructor + `observe`/`disconnect`/`takeRecords` present but callback never invoked |
+| ResizeObserver | ResizeObserver W3C (2019) | 3 | ⚠️ Stub — `observe`/`unobserve`/`disconnect` present but callback never invoked |
+| IntersectionObserver | IntersectionObserver W3C (2019) | — | ⬜ Not implemented (no stub). Many modern frameworks politely guard this with feature detection |
+| Web Cryptography API | W3C REC (2017) | 3 | ⚠️ Partial — `crypto.getRandomValues` uses `Math.random` (insecure). `crypto.subtle` (SubtleCrypto: digest/sign/encrypt/generateKey etc.) not implemented. For a secure `getRandomValues`, call `SDL_rand_bits()` or `BCryptGenRandom` (Windows) |
+| TextDecoder / TextEncoder | Encoding LS (WHATWG 2014) | — | ⬜ Not implemented. QuickJS does not expose these globally. Needed by some Emscripten outputs and Unity WebGL. Pure-JS polyfill available as a fallback |
+| AbortController / AbortSignal | DOM LS (2018) | — | ⬜ Not implemented. Required by modern `fetch()` usage patterns. Can be pure-JS stub |
+| `queueMicrotask` | HTML LS (widely adopted 2018–19) | — | ⬜ Not implemented. QuickJS microtask queue is internal; `queueMicrotask(fn)` can be exposed via `JS_EnqueueJob` or shim as `Promise.resolve().then(fn)` |
+| `requestIdleCallback` | HTML LS (Chrome-origin, 2016) | — | ⬜ Not implemented. Shim as `setTimeout(fn, 0)` is sufficient for most use cases |
+| Blob / File API | W3C WD (2019) | 6 | ⚠️ Partial — `Blob` constructor is a no-op stub; `FileReader` not implemented. `URL.createObjectURL(blob)` returns a dummy string |
+| FileReader | W3C WD (2019) | — | ⬜ Not implemented. Required for apps that read user-selected files |
+| Streams API | WHATWG Streams LS (stable 2019) | — | ⬜ Not implemented (`ReadableStream`, `WritableStream`, `TransformStream`). Some Emscripten / modern fetch users expect these |
+| Clipboard API | W3C WD (2019) | — | ⬜ Not implemented. `navigator.clipboard.writeText()`/`readText()` absent. SDL3 provides `SDL_SetClipboardText()` / `SDL_GetClipboardText()` — straightforward to wire up |
+| Gamepad API | W3C WD (2020) | — | ⬜ Stub only (`navigator.getGamepads()` returns empty array). SDL3 has `SDL_EVENT_GAMEPAD_*` events and `SDL_GetGamepads()`. Mapping to `Gamepad` objects (id/index/buttons/axes) is well-defined |
+| `btoa` / `atob` | HTML LS | — | ⬜ Not verified present in QuickJS global scope. Must add to window if absent |
+| performance.now | HR Time L2 W3C (2019) | 3 | ✅ Done → `SDL_GetTicks64()` milliseconds |
+| performance.mark/measure | User Timing L2 W3C (2019) | — | ⬜ Not implemented. Stubs sufficient for most apps |
+| `EventSource` (SSE) | HTML LS | — | ⬜ Not implemented. Not relevant for local-file apps |
+| `WebSocket` | WHATWG Fetch LS + RFC 6455 | — | ⬜ Not implemented. Out of scope for offline apps |
+| `Worker` (Web Worker) | HTML LS | — | ⬜ Stub only — constructor returns a fake object with `postMessage`/`terminate`. Actual threading would require a second QuickJS runtime in a background thread or use of SDL3 thread API |
+| `SharedArrayBuffer` | TC39 / HTML LS | — | ⬜ Not implemented |
+| `DOMParser` | DOMParser W3C | — | ⬜ Not implemented. `new DOMParser().parseFromString(html,'text/html')` is used by jQuery and some plugins. Could delegate to Lexbor. |
+| `XMLSerializer` | DOM LS | — | ⬜ Not implemented |
+| CSS Variables (custom properties) | CSS Custom Props W3C (2015) | 11 | ⬜ Future (Phase 11) |
+| CSS Box Model / Display | CSS2.1 + CSS3 | 11 | ⬜ Future (Phase 11) |
+| `<link rel="stylesheet">` | HTML LS | 11 | ⬜ Future (Phase 11) |
+| `<style>` tag parsing | HTML LS + CSS LS | 11 | ⬜ Future (Phase 11) |
+| Typed Arrays (BufferView) | Khronos + TC39 | 4 | ✅ (QuickJS built-in + `jsGetBufferData` helper for GL calls) |
+| Promise / async-await | TC39 ES2017 | — | ✅ (QuickJS built-in) |
+| JSON, Math, Date, Array, String | TC39 ES2019 | — | ✅ (QuickJS built-in) |
+| `Symbol`, `WeakMap`, `WeakSet`, `Map`, `Set` | TC39 ES2015 | — | ✅ (QuickJS built-in) |
+| `Proxy`, `Reflect` | TC39 ES2015 | — | ✅ (QuickJS built-in) |
+| ES modules (`import`/`export`) | TC39 ES2015 | — | ⚠️ Treated as regular script (warning logged); async dynamic `import()` is not wired up |
+| `for…of`, generators, iterators | TC39 ES2015 | — | ✅ (QuickJS built-in) |
+| BigInt | TC39 ES2020 | — | ✅ (QuickJS built-in) |
+| ImageData | HTML LS | 5 | ✅ Done (getImageData/putImageData, `new ImageData(w,h)`) |
+| URL / URLSearchParams | URL LS | — | ✅ (QuickJS built-in; custom `_URL` in `dom_preamble.js` fills gaps) |
+| WebAssembly (`WebAssembly.*` JS API) | W3C WebAssembly Core 1.0 (2019) | 12 | ⬜ Future (Phase 12) |
+
+### 15.2 — Canvas 2D Path Rasterizer Gap (detail)
+
+`beginPath`, `moveTo`, `lineTo`, `arc`, `bezierCurveTo`, `quadraticCurveTo`, `closePath`,
+`stroke`, `fill`, `clip` — **all currently stubs** in `rwebview_canvas2d.nim`.
+For RPG Maker MV and GDevelop these APIs are used for:
+- Circle/arc drawing (health-bar borders, button outlines)
+- Gradient-filled shapes overlaid on the WebGL canvas
+
+Candidate C libraries for polygon/path rasterization:
+| Library | Language | License | Notes |
+|---|---|---|---|
+| **nanosvg** (`nanosvgrast.h`) | C (single header) | zlib | Bezier + arc fill via scanline; already handles SVG paths |
+| **stb_truetype** scanline fill | C (single header) | public domain | Rasterizes outlines from glyph contours; same algorithm usable for path fill |
+| **sokol_shape** | C (single header) | zlib | Geometry primitives only — circles, boxes, no arbitrary paths |
+| **Blend2D** | C++ | zlib | Banned (C++ — see `AI-README.md §2`) |
+| **cairo** | C | LGPL | Large, but pure C; mature path rasterizer with Porter-Duff ops |
+
+**Recommended:** `nanosvg` rasterizer — 2 single-header files, public domain, can rasterize
+any SVG path → RGBA pixel buffer → upload to the existing Canvas 2D GL texture.
+
+### 15.3 — Performance Fixes Applied
 
 | Fix | Description |
 |---|---|
@@ -781,4 +1028,294 @@ Cross-reference this with `AI-README.md §5` to track coverage.
 
 ---
 
-*Last updated: March 2026. Phases 0–9 complete. Phase 10 (RPG Maker MV Testing) in progress.*
+## Phase 11 — HTML Element & CSS Layout Integration
+
+**Goal:** rwebview can render a basic HTML UI page — `<div>`, `<p>`, `<span>`, `<button>`,
+`<input>`, `<select>` — with CSS box-model layout and styled text. This phase focuses first
+on **stub infrastructure** (elements render as visible placeholders) and then progressively
+replaces stubs with real layout and paint.
+
+This is not required for RPG Maker MV (which renders entirely on `<canvas>`), but is needed
+for apps that mix DOM UI with canvas rendering — e.g. GDevelop's splash screen, Construct 3's
+debug overlay, Unity WebGL's progress bar, or custom HTML5 apps run via Rover.
+
+### Design Principles
+
+1. **Lexbor parses; Clay lays out; SDL3 + existing Canvas 2D paints.**
+   Do not build a full browser rendering engine. Map a useful subset of CSS
+   (block / flex / absolute positioning) to Clay layout primitives, then
+   paint each box using the CPU pixel buffer already present in `rwebview_canvas2d.nim`.
+2. **CSS is best-effort.** Properties not understood by the layout engine are silently
+   ignored. The goal is visual correctness for common patterns, not spec compliance.
+3. **Lexbor CSS module replaces ad-hoc parsing.** Do not write a hand-rolled CSS parser —
+   Lexbor already contains a production-grade CSS tokenizer and property set parser
+   (`libs/lexbor/source/lexbor/css/`). The CSS module is compiled as part of the existing
+   Lexbor static library build; no additional dependency is needed.
+4. **All new rendering goes through the existing Canvas 2D GL blit pipeline** —
+   the DOM paint buffer is just another CPU texture uploaded each frame over the WebGL
+   back-buffer, identical to how Canvas 2D currently works.
+
+### Library Map
+
+| Role | Library | Language | License | Notes |
+|---|---|---|---|---|
+| HTML parsing | **Lexbor** (already present) | C | Apache-2.0 | Full DOM tree, not just script-tag extraction. Use `lxb_dom_*` APIs already wired in `rwebview_html.nim` |
+| CSS parsing | **Lexbor CSS module** (already present) | C | Apache-2.0 | `lexbor/css/` tokenizer + property parser. Parse `<style>` tag content and inline `style=` attributes into `lxb_css_*` value objects |
+| Layout engine | **Clay** (single-header C) | C | zlib | Flexbox-like layout. Maps to `display:flex`, `display:block`, `margin`, `padding`, `width`, `height`. Source: https://github.com/nicbarker/clay — **must be C only** per `AI-README.md §2` |
+| Path rasterizer | **nanosvg** (single-header C) | C | zlib | `nanosvgrast.h` — fills Bézier/arc paths into RGBA buffer; replaces stubs for `beginPath/fill/stroke/clip` |
+| Text rendering | **SDL3_ttf** (already present) | C | zlib | Already used for Canvas 2D `fillText`; reuse for HTML text nodes |
+| Image rendering | **SDL3_image** (already present) | C | zlib | Already used; decode `<img src>` into `SDL_Surface` |
+| GPU blit | **existing Canvas 2D GL pipeline** | Nim | — | CPU pixel buffer → OpenGL texture → fullscreen quad; no new GL code needed |
+
+### Phase 11.1 — Lexbor Full DOM Walk (Stub Render)
+
+- [ ] Extend `rwebview_html.nim` (`parseScripts`) so that the full Lexbor DOM tree is
+  retained after script extraction instead of being immediately destroyed
+- [ ] Walk the retained DOM tree and build a Nim `DomNode` tree mirroring:
+  `tagName`, `id`, `className`, `style` attribute string, `textContent`, `children`
+- [ ] Map each `DomNode` to a stub JS element object in QuickJS via `_makeElement(tag)`
+  (already exists in `dom_preamble.js`) so runtime JS can call `getElementById` etc.
+- [ ] For CSS `<style>` blocks: call Lexbor CSS parser (`lxb_css_parser_*`) and attach
+  computed property structs to each matching DOM node
+- [ ] For inline `style="..."`: parse via Lexbor CSS inline-style parser, attach to node
+- [ ] Render loop stubs: draw each DomNode as a coloured `fillRect` using its
+  `background-color` value; text nodes as `fillText` at computed position (block layout only)
+
+### Phase 11.2 — Clay Flexbox Layout
+
+> **Clay** (C, single-header) is a game-oriented **UI layout library** that computes
+> element bounding boxes using a flexbox-style algorithm. It does not render; it outputs
+> `Clay_RenderCommand` structs that tell the caller exactly what rectangle to draw where.
+> This maps cleanly onto the existing Canvas 2D `fillRect` / `fillText` paint functions.
+
+- [ ] Add Clay single-header (`clay.h`) to `libs/rwebview/libs/clay/`
+  (https://github.com/nicbarker/clay — MIT/zlib licensed, pure C, single file)
+- [ ] Write Nim FFI bindings for Clay:
+  - `Clay_Initialize(memory, capacity)` — one-time setup with a fixed memory arena
+  - `Clay_BeginLayout()` / `Clay_EndLayout()` → `Clay_RenderCommandArray`
+  - `CLAY_CONTAINER`, `CLAY_TEXT`, `CLAY_RECTANGLE` macros (or equivalent Nim wrappers)
+  - `Clay_Sizing`, `Clay_Padding`, `Clay_ChildAlignment` config structs
+- [ ] CSS-to-Clay mapping:
+  - `display:block` → `CLAY_CONTAINER` with `CLAY_LAYOUT(.sizing={GROW,FIT})`
+  - `display:flex` → `CLAY_CONTAINER` with `layoutDirection=LEFT_TO_RIGHT/TOP_TO_BOTTOM`
+  - `flex-direction`, `justify-content`, `align-items` → `Clay_ChildAlignment`
+  - `width`/`height` in px → `CLAY_SIZING_FIXED`, in % → `CLAY_SIZING_PERCENT`
+  - `min-width`/`max-width` → `Clay_Sizing.min`/`.max`
+  - `margin`, `padding` in px → `Clay_Padding`
+  - `position:absolute`/`fixed` → `CLAY_FLOATING` extension
+- [ ] For each `Clay_RenderCommand`:
+  - `CLAY_RENDER_COMMAND_TYPE_RECTANGLE` → `fillRect` / `strokeRect` on the CPU pixel buffer
+  - `CLAY_RENDER_COMMAND_TYPE_TEXT` → `fillText` via SDL3_ttf (already implemented)
+  - `CLAY_RENDER_COMMAND_TYPE_IMAGE` → `drawImage` (already implemented)
+  - `CLAY_RENDER_COMMAND_TYPE_SCISSOR_START/END` → push/pop scissor region
+  - `CLAY_RENDER_COMMAND_TYPE_BORDER` → `strokeRect`-style CPU pixel ops
+- [ ] Upload the completed CPU pixel buffer to the existing Canvas 2D GL texture once per frame
+
+### Phase 11.3 — Canvas Path Rasterizer (nanosvg)
+
+- [ ] Add `nanosvg.h` + `nanosvgrast.h` to `libs/rwebview/libs/nanosvg/`
+  (https://github.com/memononen/nanosvg — zlib/MIT, single-header, pure C)
+- [ ] Write Nim wrapper for `NSVGrasterizer`:
+  - `nsvgCreateRasterizer()` → rasterizer handle
+  - `nsvgRasterize(rast, image, tx, ty, scale, dst, w, h, stride)` → rasterizes into RGBA buffer
+- [ ] Replace Canvas 2D path stubs in `rwebview_canvas2d.nim`:
+  - On each `moveTo`/`lineTo`/`bezierCurveTo`/`quadraticCurveTo`/`arc`/`closePath`:
+    accumulate path data into an in-memory `NSVGpath`-compatible structure
+  - On `fill()`: call `nsvgRasterize` into the CPU pixel buffer with current `fillStyle`
+  - On `stroke()`: same with `strokeStyle` and `lineWidth`
+  - On `clip()`: rasterize path to a 1-bit mask; alpha-multiply subsequent draws by mask
+- [ ] `createImageBitmap(image)` → return a new offscreen Canvas2D buffer pre-filled with
+  the image's `__pixelData`
+- [ ] `OffscreenCanvas(w,h)` constructor → allocate a new CPU pixel buffer; `getContext('2d')`
+  returns a Canvas 2D context backed by that buffer; `transferToImageBitmap()` snapshots it
+
+### Phase 11.4 — Input Element Rendering
+
+- [ ] `<input type="text">`:
+  - Rendered as a white fillRect with a text cursor drawn via SDL3_ttf
+  - Capture SDL keyboard events when element has focus (SDL window stays focused)
+  - Expose `value` property; fire `input`, `change`, `keydown`/`keyup` events
+- [ ] `<input type="checkbox">` / `<input type="radio">`:
+  - Simple box/circle drawn with `fillRect`/`arc`; `checked` state toggled on click
+- [ ] `<select>` / `<option>`:
+  - Draw dropdown as fillRect; expand on click; dispatch `change` event
+
+### Phase 11.5 — CSS Baseline Properties
+
+Properties to implement via Lexbor CSS parser output (not a full cascade engine):
+
+| CSS Property | Implementation |
+|---|---|
+| `color` | → `fillStyle` for text nodes |
+| `background-color` | → `fillRect` on node bounding box |
+| `background-image: url(...)` | → `drawImage` from SDL_image |
+| `font`, `font-size`, `font-family`, `font-weight` | → `parseCssFont()` (already exists) |
+| `border`, `border-radius` | → `strokeRect`; radius via `nanosvg` arc corners |
+| `opacity` | → `globalAlpha` multiplier |
+| `display` (`none`/`block`/`inline`/`flex`) | → layout skip / Clay CONTAINER |
+| `position` (`static`/`relative`/`absolute`/`fixed`) | → Clay FLOATING or offset |
+| `z-index` | → paint order sort before drawing |
+| `overflow: hidden` | → scissor rect |
+| `visibility: hidden` | → skip paint, keep layout space |
+| `cursor` | → SDL3 `SDL_SetCursor` call |
+| Custom properties `--name: value` | → Lexbor CSS variable resolution |
+
+### Phase 11.6 — `querySelector` / `querySelectorAll` with CSS Selectors
+
+Currently `querySelector` only matches `#id` and tag names. Extend to:
+- [ ] Class selector `.className` → check `element.className.split(' ')`
+- [ ] Attribute selector `[attr]`, `[attr=val]` → check element property
+- [ ] Descendant combinator `a b` → recursive child walk
+- [ ] Child combinator `a > b`
+- [ ] Multiple selectors `a, b`
+- Use Lexbor's CSS selector API (`lxb_css_selector_*`) for parsing; match against
+  the JS DOM node graph
+
+---
+
+## Phase 12 — WebAssembly Runtime
+
+**Goal:** rwebview can load and execute `.wasm` binaries via the standard `WebAssembly` JS API
+(W3C WebAssembly Core 1.0, 2019). This unlocks Unity WebGL apps, Emscripten-compiled C/C++,
+and any tool that targets WASM.
+
+### Why WASM Matters for Rover
+
+Rover's primary use cases beyond RPG Maker MV include:
+- **Unity WebGL** — outputs a `.wasm` file + JS glue + compressed assets
+- **Emscripten apps** — any C/C++ desktop app ported to browser-compatible WASM
+- **PGlite** — PostgreSQL compiled to WASM; used for in-browser database persistence
+- **GDevelop compiled games** — newer GDevelop versions can export to WASM
+
+All of these use the standard `WebAssembly.instantiate` / `WebAssembly.instantiateStreaming`
+JS API surface.
+
+### Library Options (pure C, compatible with `AI-README.md §2`)
+
+| Library | Language | License | Binary Size | Speed | Notes |
+|---|---|---|---|---|---|
+| **wasm3** | C | MIT | ~50 KB | Interpreted (~20–500× slower than native) | Simplest to embed. Single `wasm3.h` + a few `.c` files. Source: https://github.com/wasm3/wasm3 |
+| **WAMR** (iwasm) | C | Apache-2.0 | ~200 KB (interp) | Interp + Fast JIT (x86-64) | Bytecode Alliance project. Supports interpreter, "Fast JIT" (C-compiled), and AOT. Full WASI support. Source: https://github.com/bytecodealliance/wasm-micro-runtime |
+| **toywasm** | C | MIT | ~100 KB | Interpreted | Spec-complete, heavily tested, designed for embedding. Source: https://github.com/yamt/toywasm |
+| **wac** | C | MPL-2.0 | ~4 KB (core) | Interpreted | Extremely minimal (~4K lines). Suitable as a reference, not production. Source: https://github.com/kanaka/wac |
+| **wabt `wasm-interp`** | C + C++ | Apache-2.0 | — | Interpreted | Reference implementation; **uses C++** — **banned** by `AI-README.md §2` |
+| **wasmer / wasmtime** | Rust | Apache-2.0 | — | JIT/AOT | **Banned** (Rust — see `AI-README.md §2`) |
+
+**Recommended primary:** **WAMR (iwasm)** — most complete, active maintenance, fast-JIT
+option for x86-64, full WASI, official WASM proposals support (MVP + threads + SIMD).
+
+**Recommended fallback/CI:** **wasm3** — trivial to embed, zero build complexity, good
+enough for simple Emscripten apps without multi-threading.
+
+### 12.1 — WAMR Build Integration
+
+- [ ] Clone WAMR into `libs/rwebview/libs/wamr/`
+  (`git clone https://github.com/bytecodealliance/wasm-micro-runtime`)
+- [ ] CMake build: configure with `WAMR_BUILD_INTERP=1`, `WAMR_BUILD_FAST_JIT=1` (x86-64),
+  `WAMR_BUILD_LIBC_BUILTIN=1`, `WAMR_BUILD_LIBC_WASI=0` (we provide our own WASI shim)
+- [ ] Output: `libiwasm.a` static library into `libs/rwebview/bin/`
+- [ ] Write Nim FFI bindings for WAMR's C API (`wasm_export.h`):
+  - `wasm_runtime_init()` / `wasm_runtime_destroy()`
+  - `wasm_runtime_load(buf, size, error_buf)` → `WASMModuleCommon*`
+  - `wasm_runtime_instantiate(module, stack_size, heap_size, error_buf)` → `WASMModuleInstanceCommon*`
+  - `wasm_runtime_lookup_function(inst, name)` → `WASMFunctionInstanceCommon*`
+  - `wasm_runtime_call_wasm(exec_env, func, argc, argv)` → bool
+  - `wasm_runtime_get_exception(inst)` → cstring
+  - `wasm_runtime_deinstantiate(inst)`
+  - `wasm_runtime_unload(module)`
+  - `wasm_runtime_module_malloc(inst, size, native_addr)` → WASM linear memory offset
+  - `wasm_runtime_module_free(inst, ptr)`
+  - `wasm_runtime_get_wasi_ctx(inst)` (for WASI integration)
+
+### 12.2 — WebAssembly JS API Surface
+
+Expose the standard `WebAssembly` global object in QuickJS:
+
+- [ ] `WebAssembly.validate(bufferSource)` → `bool` — validate a WASM binary (calls `wasm_runtime_load` then frees immediately)
+- [ ] `WebAssembly.compile(bufferSource)` → `Promise<WebAssembly.Module>` — load module from ArrayBuffer
+- [ ] `WebAssembly.instantiate(bufferOrModule, importObject)` → `Promise<{module, instance}>` — load + instantiate
+- [ ] `WebAssembly.instantiateStreaming(fetchResponse, importObject)` → `Promise<{module, instance}>` — accepts a Fetch `Response` object, extracts ArrayBuffer, delegates to `instantiate`
+- [ ] `WebAssembly.Module` object:
+  - `module.exports` → array of `{name, kind}` export descriptors
+  - `module.imports` → array of import descriptors
+  - `WebAssembly.Module.customSections(module, name)` → array of `ArrayBuffer`
+- [ ] `WebAssembly.Instance` object:
+  - `instance.exports` → JS object where each export is accessible by name
+  - Functions → JS functions that call `wasm_runtime_call_wasm`
+  - Memory → `WebAssembly.Memory` object (see below)
+  - Table → `WebAssembly.Table` object (stub initially)
+  - Globals → `WebAssembly.Global` objects (stub initially)
+- [ ] `WebAssembly.Memory`:
+  - `new WebAssembly.Memory({initial, maximum})` → creates WASM linear memory
+  - `memory.buffer` → `ArrayBuffer` view into the WASM linear memory region
+  - `memory.grow(delta)` → extend linear memory by `delta` pages (64 KB each)
+- [ ] `WebAssembly.Table`:
+  - `new WebAssembly.Table({element:'anyfunc', initial, maximum})` → function reference table
+  - `table.get(index)`, `table.set(index, fn)`, `table.grow(delta)` — stub initially
+- [ ] `WebAssembly.Global`:
+  - `new WebAssembly.Global({value, mutable}, initVal)`
+  - `global.value` getter/setter
+- [ ] `WebAssembly.CompileError`, `WebAssembly.LinkError`, `WebAssembly.RuntimeError` — error constructors
+
+### 12.3 — Import Object Wiring
+
+Emscripten and Unity WebGL supply an `importObject` to `instantiate()` containing:
+
+- [ ] `importObject.env.*` — JS functions that the WASM module calls as imports.
+  These include the GL bindings, audio, filesystem, etc.
+  WAMR's import registration: `wasm_runtime_register_natives("env", NativeSymbol*, count)`.
+  Map each `importObject.env.funcName` to a native trampoline that calls back into QuickJS.
+- [ ] `importObject.wasi_snapshot_preview1.*` — partial WASI implementation:
+  - `fd_write`, `fd_read`, `fd_seek`, `fd_close` → route to Nim file I/O
+  - `proc_exit(code)` → call `webview_terminate`
+  - `environ_get`, `environ_sizes_get` → return empty
+  - `clock_time_get` → `SDL_GetTicks64` nanoseconds
+  - `random_get` → `SDL_rand_bits` (fill buffer with random bytes)
+- [ ] Memory access bridge: when a WASM import function receives a pointer (WASM linear memory
+  offset), `wasm_runtime_module_malloc` / address math converts to a native pointer for Nim use
+
+### 12.4 — Emscripten Compatibility Shims
+
+Emscripten-compiled apps expect a specific set of JavaScript globals in addition to the WASM
+imports. Add these to `dom_preamble.js` or a new `emscripten_compat.js` preamble:
+
+- [ ] `Module` global object with callbacks: `Module.onRuntimeInitialized`, `Module.print`, `Module.printErr`, `Module.locateFile`, `Module.canvas`, `Module.arguments`
+- [ ] `Module.HEAPU8`, `Module.HEAP32`, `Module.HEAPF32`, etc. — TypedArray views into WASM memory (filled after instantiation)
+- [ ] `Module._malloc(size)` / `Module._free(ptr)` → forward to WASM `malloc`/`free` exports
+- [ ] `Module.ccall(name, returnType, argTypes, args)` / `Module.cwrap(name, returnType, argTypes)` — call WASM C functions with type conversion
+- [ ] `Module.writeArrayToMemory(arr, ptr)` / `Module.UTF8ToString(ptr)` / `Module.stringToUTF8(str, ptr, maxLen)` — memory utility helpers
+- [ ] `Module.FS.*` — Emscripten virtual filesystem:
+  - `FS.mkdir`, `FS.writeFile`, `FS.readFile`, `FS.unlink`, `FS.stat` — backed by Nim file I/O at `baseDir`
+  - `FS.createDataFile`, `FS.mount(IDBFS/NODEFS/MEMFS, ...)` — MEMFS is in-memory; NODEFS routes to Nim file I/O; IDBFS is a stub (data not persisted unless IndexedDB is implemented in Phase 11)
+- [ ] `GL` namespace expected by Emscripten GL layer: `GL.textures`, `GL.programs`, `GL.shaders`, `GL.buffers`, `GL.framebuffers`, `GL.renderbuffers` — integer id→WebGL handle maps used by Emscripten's GL emulation layer
+
+### 12.5 — Unity WebGL Specifics
+
+Unity WebGL uses a slightly different WASM loading path than raw Emscripten:
+
+- [ ] `.wasm.br` (Brotli) / `.wasm.gz` (gzip) compressed WASM bundles:
+  need decompression before `WebAssembly.instantiate`. Use **brotli** (C, Google,
+  https://github.com/google/brotli) or **zlib** (already available on Windows) for
+  decompression. Note: `Content-Encoding` response headers from Rover's HTTP server
+  already handle this for the OS webview backend; for rwebview the decompression
+  must happen Nim-side before passing the ArrayBuffer to WAMR.
+- [ ] `UnityLoader.js` / Unity's JS runtime glue — inject as a script tag like any other;
+  will call `WebAssembly.instantiateStreaming` or `WebAssembly.instantiate`
+- [ ] Progress bar UI — Unity WebGL renders a DOM progress bar before the WASM is ready.
+  Phase 11 HTML/CSS rendering handles this if basic `<div>` + `<progress>` stubs are present.
+- [ ] Compressed texture formats (DXT/ETC) — Unity WebGL uses `WEBGL_compressed_texture_s3tc`
+  extension for DXT textures. This requires `GL_EXT_texture_compression_s3tc` on the OpenGL
+  side; verify driver support and add to `getExtension()` response if available.
+
+### 12.6 — Testing Checkpoints
+
+- [ ] **W1** — `WebAssembly.validate(buf)` returns `true` for a minimal hand-crafted WASM binary
+- [ ] **W2** — `WebAssembly.instantiate` can call a simple WASM function that adds two integers
+- [ ] **W3** — An Emscripten-compiled "hello world" C program runs and prints via `Module.print`
+- [ ] **W4** — An Emscripten-compiled OpenGL app (`gears.wasm`) renders to the SDL3 window
+- [ ] **W5** — A Unity WebGL minimal project loads to its splash screen
+- [ ] **W6** — A GDevelop WASM-exported game starts
+
+---
+
+*Last updated: March 2026. Phases 0–10 complete. Phases 11–12 planned. See ISSUES.md for remaining work beyond Phase 10.*
